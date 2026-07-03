@@ -4,7 +4,8 @@ import Constants from "expo-constants";
 import { Platform } from "react-native";
 
 const LOCAL_API = "http://192.168.1.8:8000/api/";
-const DEFAULT_API = LOCAL_API;
+const PRODUCTION_API = "https://iiepulse.indrainstitute.com/api/";
+const DEFAULT_API = PRODUCTION_API;
 
 function normalizeApiBaseUrl(url: string) {
   return url.endsWith("/") ? url : `${url}/`;
@@ -54,14 +55,14 @@ function getExpoApiBaseUrl() {
 }
 
 function getApiBaseUrl() {
-  if (Platform.OS !== "web") {
-    return LOCAL_API;
-  }
-
   const envApiUrl = getEnvApiBaseUrl();
 
   if (envApiUrl) {
     return envApiUrl;
+  }
+
+  if (Platform.OS !== "web") {
+    return DEFAULT_API;
   }
 
   const expoApiUrl = getExpoApiBaseUrl();
@@ -89,23 +90,23 @@ function getCandidateApiBaseUrls() {
   const urls = new Set<string>();
   const envApiUrl = getEnvApiBaseUrl();
 
-  urls.add(LOCAL_API);
-  urls.add(DEFAULT_API);
-
   if (envApiUrl) {
     urls.add(envApiUrl);
   }
 
-  if (Platform.OS === "android") {
-    urls.add("http://10.0.2.2:8000/api/");
-  }
+  urls.add(API_BASE_URL);
+  urls.add(DEFAULT_API);
 
   const expoApiUrl = getExpoApiBaseUrl();
   if (expoApiUrl) {
     urls.add(expoApiUrl);
   }
 
-  urls.add(API_BASE_URL);
+  urls.add(LOCAL_API);
+
+  if (Platform.OS === "android") {
+    urls.add("http://10.0.2.2:8000/api/");
+  }
 
   return Array.from(urls).map(normalizeApiBaseUrl);
 }

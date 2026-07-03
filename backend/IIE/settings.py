@@ -18,7 +18,7 @@ def env_list(key, default=None, sep=','):
         return [item.strip() for item in value.split(sep) if item.strip()]
     return default or []
 
-DEPLOYMENT_DOMAIN = os.getenv('DEPLOYMENT_DOMAIN', 'testiie.indrainstitute.com').strip()
+DEPLOYMENT_DOMAIN = os.getenv('DEPLOYMENT_DOMAIN', 'iiepulse.indrainstitute.com').strip()
 DEPLOYMENT_ORIGIN = f"https://{DEPLOYMENT_DOMAIN}"
 CSRF_TRUSTED_ORIGINS = env_list('DJANGO_CSRF_TRUSTED_ORIGINS', [DEPLOYMENT_ORIGIN])
 INSTALLED_APPS = [
