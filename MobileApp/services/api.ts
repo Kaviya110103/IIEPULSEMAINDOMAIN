@@ -4,7 +4,7 @@ import Constants from "expo-constants";
 import { Platform } from "react-native";
 
 const LOCAL_API = "http://192.168.1.8:8000/api/";
-const PRODUCTION_API = "https://iiepulse.indrainstitute.com/api/";
+const PRODUCTION_API = "https://testiie.indrainstitute.com/api/";
 const DEFAULT_API = PRODUCTION_API;
 
 function normalizeApiBaseUrl(url: string) {
