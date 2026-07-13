@@ -1,0 +1,31 @@
+﻿No.,Question,Option_1,Option_2,Option_3,Option_4,Explanation,Correct Answer
+1,Which data type is immutable?,list,tuple,dict,set,Tuples cannot be modified after creation.,tuple
+2,Which function returns the length of a string?,size(),len(),count(),length(),`len()` returns the number of characters in a string.,len()
+3,How do you handle exceptions in Python?,try-except,catch,handle,error,Python uses try-except for exception handling.,try-except
+4,Which method adds an element to a list?,add(),append(),insert(),extend(),`append()` adds a single element at the end of the list.,append()
+5,"What is the output of bool("""")?",TRUE,FALSE,None,Error,Empty strings are considered False in Python.,FALSE
+6,Which library is used for data manipulation in Python?,NumPy,pandas,matplotlib,seaborn,`pandas` is mainly used for data manipulation.,pandas
+7,What is the main purpose of data visualization?,Data cleaning,Insight presentation,Feature selection,Data storage,Visualization helps to communicate insights effectively.,Insight presentation
+8,Which method is used to handle missing data in pandas?,fillna(),dropna(),replace(),Both 1 & 2,Both `fillna()` and `dropna()` are used to handle missing values.,Both 1 & 2
+9,Which library is used for plotting?,NumPy,matplotlib,pandas,sklearn,`matplotlib` is a visualization library.,matplotlib
+10,Which of the following is unsupervised learning?,Linear Regression,K-Means,Logistic Regression,Decision Tree,K-Means clustering is an unsupervised algorithm.,K-Means
+11,Which algorithm is used for classification?,Linear Regression,Decision Tree,K-Means,PCA,Decision Tree can be used for classification tasks.,Decision Tree
+12,Which metric is used for regression evaluation?,Accuracy,MSE,F1-score,Precision,Mean Squared Error (MSE) is used for regression.,MSE
+13,What is overfitting?,Model underperforming,Model fits training data too well,Model ignoring data,Model with low variance,Overfitting occurs when model memorizes training data and performs poorly on new data.,Model fits training data too well
+14,Which technique reduces dimensionality?,PCA,Regression,Clustering,Classification,Principal Component Analysis (PCA) reduces features while preserving variance.,PCA
+15,Which algorithm is unsupervised?,K-Means,Random Forest,Logistic Regression,SVM,K-Means clusters data without labels.,K-Means
+16,Flask is a _____ framework.,Frontend,Micro web,Machine learning,Desktop,Flask is a lightweight web framework for Python.,Micro web
+17,Which command runs a Flask app?,python app.py,flask run,runserver,start app,`flask run` starts the development server.,flask run
+18,Which decorator defines a route?,@route,@app.route,@flask.route,@path,`@app.route()` maps URL to a function.,@app.route
+19,Which object represents a Flask app?,Flask(),App(),Server(),Web(),`app = Flask(__name__)` creates Flask app object.,Flask()
+20,Which template engine is used in Flask?,Django Templates,Jinja2,Mako,None,Flask uses Jinja2 for rendering HTML.,Jinja2
+21,CNN stands for?,Convolutional Neural Network,Conditional Neural Network,Central Neural Network,Converged Network,CNN is used for image data.,Convolutional Neural Network
+22,RNN is suitable for?,Image Classification,Sequential Data,Clustering,Regression,Recurrent Neural Networks handle sequences like text or time series.,Sequential Data
+23,ANN consists of?,Only input and output,Only hidden layers,No layers,None,"ANN has input, hidden, and output layers.","Input, Hidden, Output layers"
+24,Which activation function is common in DL?,ReLU,Linear,Sigmoid,Both 1 & 3,ReLU and Sigmoid are commonly used.,Both 1 & 3
+25,Which optimizer updates weights in neural networks?,Gradient Descent,Random,RMS,Adam,Optimizers like Gradient Descent and Adam adjust weights.,Adam
+26,NLP stands for?,Natural Language Processing,Neural Language Processing,Natural Logic Programming,None,NLP deals with human language data.,Natural Language Processing
+27,Tokenization splits text into?,Sentences,Words,Both,Paragraphs,Tokenization can split text into words or sentences.,Both
+28,Which is a Python NLP library?,Pandas,NumPy,Matplotlib,Matplotlib,"NLTK provides NLP functions like tokenization, POS tagging, etc.",NLTK
+29,Stemming does?,Converts words to root form,Removes stopwords,Lemmatization,Part-of-speech tagging,Stemming reduces words to base/root.,Converts words to root form
+30,Which task is NLP used for?,Sentiment Analysis,Speech Recognition,Chatbots,All,"NLP is applied in tasks like sentiment analysis, chatbots, and speech recognition.",All

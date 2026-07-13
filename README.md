@@ -61,7 +61,7 @@ python manage.py createsuperuser
 python manage.py runserver 8000
 ```
 Local API base URL: `http://localhost:8000/api/`
-Deployment API base URL: `https://testiie.indrainstitute.com/api/`
+Deployment API base URL: `https://iiepulse.indrainstitute.com/api/`
 
 ---
 
@@ -79,7 +79,7 @@ npm run dev
 ```
 Opens at: `http://localhost:3000`
 
-> By default, set `VITE_API_BASE_URL=https://testiie.indrainstitute.com/api` for deployment. Set `VITE_API_PROXY_TARGET=http://localhost:8000` when you want the dev server to use a local backend through the `/api/` and `/media/` proxy.
+> By default, set `VITE_API_BASE_URL=https://iiepulse.indrainstitute.com/api` for deployment. Set `VITE_API_PROXY_TARGET=http://localhost:8000` when you want the dev server to use a local backend through the `/api/` and `/media/` proxy.
 
 ---
 

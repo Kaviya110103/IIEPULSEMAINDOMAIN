@@ -15,7 +15,7 @@ import {
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import api from "@/services/api";
 
-type AnnouncementSource = "admin" | "counselor";
+type AnnouncementSource = "admin" | "counselor" | "trainer";
 
 type AnnouncementItem = {
   id: number | string;
@@ -80,6 +80,7 @@ export default function Announcement() {
   const sourceCounts = useMemo(() => ({
     admin: announcements.filter((item) => item.source === "admin").length,
     counselor: announcements.filter((item) => item.source === "counselor").length,
+    trainer: announcements.filter((item) => item.source === "trainer").length,
   }), [announcements]);
 
   const filteredAnnouncements = useMemo(() => {
@@ -225,6 +226,7 @@ export default function Announcement() {
         {([
           { key: "admin", label: "Admin", icon: "shield-checkmark" },
           { key: "counselor", label: "Counselor", icon: "people" },
+          { key: "trainer", label: "Trainer", icon: "school" },
         ] as const).map((segment) => {
           const active = activeSource === segment.key;
           return (

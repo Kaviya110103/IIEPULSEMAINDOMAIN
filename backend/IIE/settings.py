@@ -18,9 +18,21 @@ def env_list(key, default=None, sep=','):
         return [item.strip() for item in value.split(sep) if item.strip()]
     return default or []
 
+LOCAL_DOMAIN = os.getenv('LOCAL_DOMAIN', 'testiie.indrainstitute.com').strip()
+LOCAL_LAN_DOMAIN = os.getenv('LOCAL_LAN_DOMAIN', 'testiie.indrainstitute.com').strip()
 DEPLOYMENT_DOMAIN = os.getenv('DEPLOYMENT_DOMAIN', 'testiie.indrainstitute.com').strip()
-DEPLOYMENT_ORIGIN = f"https://{DEPLOYMENT_DOMAIN}"
-CSRF_TRUSTED_ORIGINS = env_list('DJANGO_CSRF_TRUSTED_ORIGINS', [DEPLOYMENT_ORIGIN])
+DEPLOYMENT_SCHEME = os.getenv(
+    'DEPLOYMENT_SCHEME',
+    'http' if DEPLOYMENT_DOMAIN.startswith(('localhost', '127.0.0.1', '192.168.')) else 'https',
+).strip()
+DEPLOYMENT_ORIGIN = os.getenv('DEPLOYMENT_ORIGIN', f"{DEPLOYMENT_SCHEME}://{DEPLOYMENT_DOMAIN}").strip()
+DEPLOYMENT_IS_LOCAL = DEPLOYMENT_DOMAIN.startswith(('localhost', '127.0.0.1', '192.168.'))
+CSRF_TRUSTED_ORIGINS = env_list('DJANGO_CSRF_TRUSTED_ORIGINS', [
+    DEPLOYMENT_ORIGIN,
+    f'https://{LOCAL_DOMAIN}',
+    f'https://{LOCAL_LAN_DOMAIN}',
+    'https://testiie.indrainstitute.com',
+])
 INSTALLED_APPS = [
     'django.contrib.admin',
     'django.contrib.auth',
@@ -125,16 +137,11 @@ DEBUG = getenv_bool('DJANGO_DEBUG', _using_sqlite)
 
 ALLOWED_HOSTS = env_list('DJANGO_ALLOWED_HOSTS')
 if not ALLOWED_HOSTS:
-    dev_hosts = [
-        'localhost',
-        '127.0.0.1',
-        '0.0.0.0',
-        '10.0.2.2',
-        '192.168.1.8',
-        '192.168.1.15',
+    ALLOWED_HOSTS = [
         DEPLOYMENT_DOMAIN,
+        LOCAL_DOMAIN.split(':')[0],
+        LOCAL_LAN_DOMAIN.split(':')[0],
     ]
-    ALLOWED_HOSTS = dev_hosts if DEBUG else [DEPLOYMENT_DOMAIN]
 
 REST_FRAMEWORK = {
     'DEFAULT_AUTHENTICATION_CLASSES': [
@@ -162,10 +169,10 @@ CORS_ALLOWED_ORIGINS = env_list(
 
 CORS_ALLOW_CREDENTIALS = True
 SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
-SECURE_SSL_REDIRECT = getenv_bool('DJANGO_SECURE_SSL_REDIRECT', not DEBUG)
+SECURE_SSL_REDIRECT = getenv_bool('DJANGO_SECURE_SSL_REDIRECT', not DEBUG and not DEPLOYMENT_IS_LOCAL)
 SESSION_COOKIE_SECURE = getenv_bool('DJANGO_SESSION_COOKIE_SECURE', SECURE_SSL_REDIRECT)
 CSRF_COOKIE_SECURE = getenv_bool('DJANGO_CSRF_COOKIE_SECURE', SECURE_SSL_REDIRECT)
-SECURE_HSTS_SECONDS = int(os.getenv('DJANGO_SECURE_HSTS_SECONDS', 31536000 if not DEBUG else 0))
+SECURE_HSTS_SECONDS = int(os.getenv('DJANGO_SECURE_HSTS_SECONDS', 31536000 if not DEBUG and not DEPLOYMENT_IS_LOCAL else 0))
 SECURE_HSTS_INCLUDE_SUBDOMAINS = getenv_bool('DJANGO_SECURE_HSTS_INCLUDE_SUBDOMAINS', False)
 SECURE_HSTS_PRELOAD = getenv_bool('DJANGO_SECURE_HSTS_PRELOAD', False)
 SECURE_BROWSER_XSS_FILTER = True

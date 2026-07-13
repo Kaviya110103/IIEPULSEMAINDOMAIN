@@ -19,15 +19,15 @@ import {
   AdminCounselorSupportRequest, AdminCounselorSupportHistory,
   AdminStudentSupportRequest, AdminStudentSupportHistory, AdminAnnouncements, AdminFeeManagement,
   AdminCalendar, AdminGallery, AdminNews, AdminReferrals, AdminVlogs,
-  AdminEmployeeMonitoring, AdminStudentMonitoring, AdminPublicUsers,
+  AdminEmployeeMonitoring, AdminStudentMonitoring, AdminEmployeeTracking, AdminPublicUsers,
 } from './pages/admin/AdminPages'
 
 // ── Employee ───────────────────────────────────────────────────────────────
 import {
-  EmployeeDashboard, ViewBatches, MarkAttendance,
+  EmployeeDashboard, ViewBatches, MarkAttendance, AttendanceHistoryPage,
   StudyMaterials, MaterialLibrary, StaffLeaveApply, CounselorLeaveApply, StaffSupportRequest,
   CounselorSupportRequest, StudentLeaveRequests, StaffCompletedStudents,
-  StaffAnnouncements, BranchAnnouncements, StaffDoubts as EmployeeDoubts, ViewStudents,
+  StaffAnnouncements, TrainerAnnouncements, BranchAnnouncements, StaffDoubts as EmployeeDoubts, ViewStudents,
   StaffStudentLeaveRequests, StaffOwnLeaveHistory,
   CreateTest, ViewTests, TestResults, AddQuestions,
   UploadQuiz, ManageQuizzes, StaffQuizResults, MentorStudentMonitoring
@@ -42,7 +42,7 @@ import {
 
 // ── Student ────────────────────────────────────────────────────────────────
 import {
-  StudentDashboard, StudentAttendance, StudentSessions, StudentNotifications,
+  StudentDashboard, StudentAnnouncements, StudentAttendance, StudentSessions, StudentNotifications,
   StudentQuizList, StudentTests, StudentLeave, StudentMaterials, StudentSupport, StudentFeeDetails,
 } from './pages/student/StudentPages'
 
@@ -204,6 +204,7 @@ function AppRoutes() {
 
         <Route path="monitoring/employees" element={<AdminEmployeeMonitoring />} />
         <Route path="monitoring/students" element={<AdminStudentMonitoring />} />
+        <Route path="employee-tracking" element={<AdminEmployeeTracking />} />
 
         {/* Support pages - USING ADMIN VERSIONS */}
         <Route path="staff-support" element={<AdminMentorSupportRequest />} />
@@ -234,9 +235,11 @@ function AppRoutes() {
         <Route index element={<EmployeeDashboard />} />
         <Route path="students" element={<ViewStudents />} />
         <Route path="attendance" element={<MarkAttendance />} />
+        <Route path="attendance-history" element={<AttendanceHistoryPage />} />
         <Route path="batches" element={<ViewBatches />} />
         <Route path="doubts" element={<EmployeeDoubts />} />
         <Route path="announcements" element={<StaffAnnouncements />} />
+        <Route path="trainer-announcements" element={<TrainerAnnouncements />} />
         <Route path="branch-announcements" element={<BranchAnnouncements />} />
         <Route path="monitoring/students" element={<MentorStudentMonitoring />} />
 
@@ -271,6 +274,9 @@ function AppRoutes() {
       {/* ── COUNSELOR ─────────────────────────────────────────────── */}
       <Route path="/counselor" element={<ProtectedRoute allowedRoles={['counselor', 'employee']}><AppLayout role="counselor" /></ProtectedRoute>}>
         <Route index element={<CounselorDashboard />} />
+        <Route path="course-types" element={<AdminCourseTypes />} />
+        <Route path="courses/add" element={<CoursesList />} />
+        <Route path="courses" element={<CoursesList />} />
         <Route path="add-batch" element={<BatchesList />} />
         <Route path="add-student" element={<StudentsList adminView />} />
         <Route path="students" element={<CounselorStudents />} />
@@ -291,7 +297,7 @@ function AppRoutes() {
       {/* ── STUDENT ───────────────────────────────────────────────── */}
       <Route path="/student" element={<ProtectedRoute allowedRoles={['student']}><AppLayout role="student" /></ProtectedRoute>}>
         <Route index element={<StudentDashboard />} />
-        <Route path="announcements" element={<StaffAnnouncements />} />
+        <Route path="announcements" element={<StudentAnnouncements />} />
         <Route path="branch-announcements" element={<BranchAnnouncements />} />
         <Route path="attendance" element={<StudentAttendance />} />
         <Route path="sessions" element={<StudentSessions />} />

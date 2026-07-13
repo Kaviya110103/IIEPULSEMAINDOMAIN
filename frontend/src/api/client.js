@@ -14,6 +14,20 @@ const resolveApiUrl = (path) => {
   return `${root}${suffix}`
 }
 
+export const getApiErrorMessage = (err, fallback = 'Request failed') => {
+  const data = err?.response?.data
+
+  if (!data) return err?.message || fallback
+  if (typeof data === 'string') return data || fallback
+  if (data.error || data.detail) return data.error || data.detail
+
+  const firstValue = Object.values(data)[0]
+  if (Array.isArray(firstValue)) return firstValue[0] || fallback
+  if (firstValue) return String(firstValue)
+
+  return fallback
+}
+
 export const logoutSession = async ({ redirect = true, keepalive = false } = {}) => {
   if (logoutInProgress) return
   const access = localStorage.getItem('access')
@@ -70,8 +84,13 @@ api.interceptors.response.use(
   r => r,
   async err => {
     const orig = err.config
+    const requestUrl = String(orig?.url || '')
+    const isAuthRequest =
+      requestUrl.includes('/auth/login/') ||
+      requestUrl.includes('/auth/refresh/') ||
+      requestUrl.includes('/auth/logout/')
 
-    if (err.response?.status === 401 && !orig._retry) {
+    if (err.response?.status === 401 && orig && !orig._retry && !isAuthRequest) {
       orig._retry = true
 
       try {

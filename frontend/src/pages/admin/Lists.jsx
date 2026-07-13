@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react'
-import { useSearchParams } from 'react-router-dom'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import api from '../../api/client'
 import { ConfirmModal } from '../../components/common/index.jsx'
 import { useAuth } from '../../context/AuthContext'
@@ -533,6 +533,9 @@ export function StudentsList({ adminView = true }) {
   const [loading, setLoading] = useState(true)
   const [search, setSearch] = useState('')
   const [branchFilter, setBranchFilter] = useState(initialBranch)
+  const [batchFilter, setBatchFilter] = useState('')
+  const [courseFilter, setCourseFilter] = useState('')
+  const [trainerFilter, setTrainerFilter] = useState('')
   const [showForm, setShowForm] = useState(false)
   const [editItem, setEditItem] = useState(null)
   const [deleteId, setDeleteId] = useState(null)
@@ -609,12 +612,26 @@ export function StudentsList({ adminView = true }) {
     }
   }
 
-  const branches = [...new Set(data.map(s => s.branch).filter(Boolean))]
+  const branches = [...new Set(data.map(s => s.branch).filter(Boolean))].sort()
+  const batchOptions = [...new Set(data.map(s => s.assigned_batch_number).filter(Boolean))].sort()
+  const courseOptions = [...new Set(data.map(s => s.course_name || s.course).filter(Boolean))].sort()
+  const trainerOptions = [...new Set(data.map(s => s.assigned_staff_name).filter(Boolean))].sort()
   const filtered = data.filter(s => {
     const ms = `${s.first_name} ${s.last_name} ${s.student_id} ${s.email} ${s.course}`.toLowerCase().includes(search.toLowerCase())
     const mb = !branchFilter || s.branch === branchFilter
-    return ms && mb
+    const mba = !batchFilter || s.assigned_batch_number === batchFilter
+    const mc = !courseFilter || (s.course_name || s.course) === courseFilter
+    const mt = !trainerFilter || s.assigned_staff_name === trainerFilter
+    return ms && mb && mba && mc && mt
   })
+
+  const clearAllFilters = () => {
+    setSearch('')
+    updateBranchFilter('')
+    setBatchFilter('')
+    setCourseFilter('')
+    setTrainerFilter('')
+  }
 
   return (
     <div className="ls-root">
@@ -626,6 +643,23 @@ export function StudentsList({ adminView = true }) {
         <SH title="All Students" count={filtered.length} actions={
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
             <input className="ls-input" style={{ width: 200 }} placeholder="Search..." value={search} onChange={e => setSearch(e.target.value)} />
+            <select className="ls-select" style={{ width: 150 }} value={branchFilter} onChange={e => updateBranchFilter(e.target.value)}>
+              <option value="">All Branches</option>
+              {branches.map(branch => <option key={branch} value={branch}>{branch}</option>)}
+            </select>
+            <select className="ls-select" style={{ width: 150 }} value={batchFilter} onChange={e => setBatchFilter(e.target.value)}>
+              <option value="">All Batches</option>
+              {batchOptions.map(batch => <option key={batch} value={batch}>{batch}</option>)}
+            </select>
+            <select className="ls-select" style={{ width: 160 }} value={courseFilter} onChange={e => setCourseFilter(e.target.value)}>
+              <option value="">All Courses</option>
+              {courseOptions.map(course => <option key={course} value={course}>{course}</option>)}
+            </select>
+            <select className="ls-select" style={{ width: 170 }} value={trainerFilter} onChange={e => setTrainerFilter(e.target.value)}>
+              <option value="">All Trainers</option>
+              {trainerOptions.map(trainer => <option key={trainer} value={trainer}>{trainer}</option>)}
+            </select>
+            <button className="ls-btn ls-btn-ghost ls-btn-sm" onClick={clearAllFilters}><i className="fas fa-times" /> Clear</button>
             <button className="ls-btn ls-btn-ghost ls-btn-icon" onClick={load}><i className="fas fa-sync-alt" /></button>
           </div>
         } />
@@ -888,12 +922,28 @@ function StudentForm({ item, courses, counselorBranch, onClose, onSaved }) {
 
 
 function AssignModal({ student, counselorBranch, onClose, onSaved }) {
+  const navigate = useNavigate()
   const [emps, setEmps] = useState([])
   const [batches, setBatches] = useState([])
   const [staffId, setStaffId] = useState('')
   const [batchId, setBatchId] = useState('')
+  const [batchMode, setBatchMode] = useState('existing')
+  const [showCreateBatch, setShowCreateBatch] = useState(false)
+  const [createForm, setCreateForm] = useState({
+    batch_number: '',
+    course_type: '',
+    course_name: '',
+    start_date: '',
+    end_date: '',
+    batch_timing: '',
+  })
+  const [logsheetFile, setLogsheetFile] = useState(null)
+  const [courseLogsheetUrl, setCourseLogsheetUrl] = useState(null)
+  const [courses, setCourses] = useState([])
+  const [courseTypes, setCourseTypes] = useState([])
   const [loadingBatches, setLoadingBatches] = useState(false)
   const [saving, setSaving] = useState(false)
+  const [creatingBatch, setCreatingBatch] = useState(false)
 
   useEffect(() => {
     // ✅ Filter employees by counselor's branch AND only trainers/mentors
@@ -931,7 +981,91 @@ function AssignModal({ student, counselorBranch, onClose, onSaved }) {
       .finally(() => setLoadingBatches(false))
   }, [staffId])
 
+  useEffect(() => {
+    api.get('/courses/').then(r => setCourses(r.data.results || r.data || [])).catch(() => setCourses([]))
+    api.get('/course-types/').then(r => setCourseTypes(r.data.results || r.data || [])).catch(() => setCourseTypes([]))
+  }, [])
+
+  useEffect(() => {
+    if (!showCreateBatch || createForm.batch_number || !counselorBranch) return
+    api.get(`/generate/batch-number/?branch=${counselorBranch}`)
+      .then(r => setCreateForm(p => ({ ...p, batch_number: r.data.batch_number || '' })))
+      .catch(() => {})
+  }, [showCreateBatch, counselorBranch, createForm.batch_number])
+
+  const timings = [
+    'Morning (10:00 AM - 11:00 AM)',
+    'Morning (11:00 AM - 12:00 PM)',
+    'Afternoon (12:00 PM - 1:00 PM)',
+    'Afternoon (1:00 PM - 2:00 PM)',
+    'Evening (3:00 PM - 4:00 PM)',
+    'Evening (4:00 PM - 5:00 PM)',
+    'Evening (5:00 PM - 6:00 PM)',
+    'Evening (6:00 PM - 7:00 PM)',
+    'Saturday (10:00 AM - 2:00 PM)',
+    'Saturday (3:00 PM - 5:00 PM)',
+    'Sunday (10:00 AM - 2:00 PM)',
+  ]
+
+  const assignStudent = async (targetBatchId) => {
+    await api.post(`/students/${student.student_id}/assign-staff/`, {
+      staff_id: staffId,
+      batch_id: targetBatchId,
+    })
+  }
+
+  const handleCreateCourseChange = (courseId) => {
+    setCreateForm(p => ({ ...p, course_name: courseId }))
+    const selectedCourse = courses.find(course => String(course.id) === String(courseId))
+    setCourseLogsheetUrl(selectedCourse?.course_logsheet || null)
+    setLogsheetFile(null)
+  }
+
+  const resetCreateBatchForm = () => {
+    setCreateForm({
+      batch_number: '',
+      course_type: '',
+      course_name: '',
+      start_date: '',
+      end_date: '',
+      batch_timing: '',
+    })
+    setLogsheetFile(null)
+    setCourseLogsheetUrl(null)
+  }
+
+  const createBatchAndAssign = async (e) => {
+    e.preventDefault()
+    if (!staffId) return toast.error('Select staff first')
+    setCreatingBatch(true)
+    try {
+      const fd = new FormData()
+      Object.entries({
+        ...createForm,
+        faculty: staffId,
+        branch: counselorBranch,
+      }).forEach(([k, v]) => { if (v) fd.append(k, v) })
+      if (logsheetFile) {
+        fd.append('course_logsheet', logsheetFile)
+        fd.append('logsheet_file', logsheetFile)
+      }
+      const res = await api.post('/batches/create/', fd)
+      const createdBatch = res.data.batch
+      await assignStudent(createdBatch.id)
+      toast.success('Batch created and student assigned!')
+      setShowCreateBatch(false)
+      resetCreateBatchForm()
+      onSaved()
+    } catch (err) {
+      const d = err.response?.data || {}
+      toast.error(d.error || d.detail || Object.values(d)[0]?.[0] || 'Batch create / assign failed')
+    } finally {
+      setCreatingBatch(false)
+    }
+  }
+
   return (
+     <>
     <Modal open onClose={onClose} title={`Assign — ${student.first_name} ${student.last_name}`} size="md">
 
       {/* Branch info */}
@@ -953,46 +1087,67 @@ function AssignModal({ student, counselorBranch, onClose, onSaved }) {
         </Sel>
       </FG>
 
-      <FG label="Select Batch">
-        {!staffId ? (
-          <div className="ls-alert-info">
-            <i className="fas fa-info-circle" style={{ marginRight: 8 }} />
-            Please select a staff member first to see their batches.
-          </div>
-        ) : loadingBatches ? (
-          <div style={{ textAlign: 'center', padding: 12 }}>
-            <i className="fas fa-spinner fa-spin" style={{ color: T.amber }} /> Loading batches...
-          </div>
-        ) : batches.length === 0 ? (
-          <div className="ls-alert-warning">
-            <i className="fas fa-exclamation-triangle" style={{ marginRight: 8 }} />
-            This staff member has no batches assigned.
-          </div>
-        ) : (
-          <Sel value={batchId} onChange={e => setBatchId(e.target.value)}>
-            <option value="">— Select Batch —</option>
-            {batches.map(b => (
-              <option key={b.id} value={b.id}>
-                {b.batch_number} — {b.course_name_display || b.course_name} ({b.batch_timing})
-              </option>
-            ))}
-          </Sel>
-        )}
+      <FG label="Batch Assignment Type">
+        <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+          <button
+            type="button"
+            className={`ls-btn ${batchMode === 'existing' ? 'ls-btn-primary' : 'ls-btn-ghost'}`}
+            onClick={() => { setBatchMode('existing'); setShowCreateBatch(false); resetCreateBatchForm() }}
+          >
+            <i className="fas fa-layer-group" /> Add Existing Batch
+          </button>
+          <button
+            type="button"
+            className={`ls-btn ${batchMode === 'new' ? 'ls-btn-primary' : 'ls-btn-ghost'}`}
+            onClick={() => {
+              onClose()
+              navigate('/counselor/add-batch')
+            }}
+          >
+            <i className="fas fa-plus" /> Create New Batch
+          </button>
+        </div>
       </FG>
 
+      {batchMode === 'existing' && (
+        <FG label="Select Batch">
+          {!staffId ? (
+            <div className="ls-alert-info">
+              <i className="fas fa-info-circle" style={{ marginRight: 8 }} />
+              Please select a staff member first to see their batches.
+            </div>
+          ) : loadingBatches ? (
+            <div style={{ textAlign: 'center', padding: 12 }}>
+              <i className="fas fa-spinner fa-spin" style={{ color: T.amber }} /> Loading batches...
+            </div>
+          ) : batches.length === 0 ? (
+            <div className="ls-alert-warning">
+              <i className="fas fa-exclamation-triangle" style={{ marginRight: 8 }} />
+              This staff member has no batches assigned. Use Create New Batch.
+            </div>
+          ) : (
+            <Sel value={batchId} onChange={e => setBatchId(e.target.value)}>
+              <option value="">Select Batch</option>
+              {batches.map(b => (
+                <option key={b.id} value={b.id}>
+                  {b.batch_number} - {b.course_name_display || b.course_name} ({b.batch_timing})
+                </option>
+              ))}
+            </Sel>
+          )}
+          <span className="ls-hint">Existing batch assignment will inherit trainer-completed sessions for this student.</span>
+        </FG>
+      )}
       <hr className="ls-divider" />
       <div style={{ display: 'flex', justifyContent: 'center', gap: 12 }}>
         <button
           className="ls-btn ls-btn-primary"
-          disabled={saving || !staffId || !batchId}
+          disabled={saving || !staffId || batchMode !== 'existing' || !batchId}
           onClick={async () => {
             if (!staffId || !batchId) return toast.error('Select both staff and batch')
             setSaving(true)
             try {
-              await api.post(`/students/${student.student_id}/assign-staff/`, {
-                staff_id: staffId,
-                batch_id: batchId,
-              })
+              await assignStudent(batchId)
               toast.success('Assigned successfully!')
               onSaved()
             } catch (err) {
@@ -1008,6 +1163,7 @@ function AssignModal({ student, counselorBranch, onClose, onSaved }) {
         <button className="ls-btn ls-btn-ghost" onClick={onClose}>Cancel</button>
       </div>
     </Modal>
+    </>
   )
 }
 
@@ -1037,7 +1193,7 @@ export function CoursesList() {
         {loading ? <Spin /> : data.length === 0 ? <Empty msg="No courses found." /> : (
           <div style={{ overflowX: 'auto' }}>
             <table className="ls-table">
-              <thead><tr><th>#</th><th>Course Name</th><th>Type</th><th>Fee</th><th>Logsheet</th><th>Created</th><th>Actions</th></tr></thead>
+                  <th>Fee</th>
               <tbody>
                 {data.map((c, i) => (
                   <tr key={c.id}>
@@ -1200,6 +1356,9 @@ export function BatchesList({ staffView = false }) {
   const [deleteId, setDeleteId] = useState(null)
   const [search, setSearch] = useState('')
   const [branchFilter, setBranchFilter] = useState(initialBranch)
+  const [batchFilter, setBatchFilter] = useState('')
+  const [courseFilter, setCourseFilter] = useState('')
+  const [trainerFilter, setTrainerFilter] = useState('')
 
   // Determine user role
   const isAdmin = user?.user_type === 'admin'
@@ -1251,6 +1410,10 @@ export function BatchesList({ staffView = false }) {
   const branches = [...new Set(data.map(b => b.branch).filter(b => b && b !== '—'))]
 
   // Filter batches based on search and branch
+  const batchOptions = [...new Set(data.map(b => b.batch_number).filter(Boolean))].sort()
+  const courseOptions = [...new Set(data.map(b => b.course_name_display).filter(Boolean))].sort()
+  const trainerOptions = [...new Set(data.map(b => b.faculty_name).filter(Boolean))].sort()
+
   const filteredData = data.filter(batch => {
     const searchLower = search.toLowerCase()
     const matchesSearch = search === '' || (
@@ -1262,8 +1425,19 @@ export function BatchesList({ staffView = false }) {
       batch.course_type?.toLowerCase().includes(searchLower)
     )
     const matchesBranch = !branchFilter || batch.branch === branchFilter
-    return matchesSearch && matchesBranch
+    const matchesBatch = !batchFilter || batch.batch_number === batchFilter
+    const matchesCourse = !courseFilter || batch.course_name_display === courseFilter
+    const matchesTrainer = !trainerFilter || batch.faculty_name === trainerFilter
+    return matchesSearch && matchesBranch && matchesBatch && matchesCourse && matchesTrainer
   })
+
+  const clearAllFilters = () => {
+    setSearch('')
+    updateBranchFilter('')
+    setBatchFilter('')
+    setCourseFilter('')
+    setTrainerFilter('')
+  }
 
   return (
     <div className="ls-root">
@@ -1297,6 +1471,23 @@ export function BatchesList({ staffView = false }) {
               value={search}
               onChange={e => setSearch(e.target.value)}
             />
+            <select className="ls-select" style={{ width: 150 }} value={branchFilter} onChange={e => updateBranchFilter(e.target.value)}>
+              <option value="">All Branches</option>
+              {branches.map(branch => <option key={branch} value={branch}>{branch}</option>)}
+            </select>
+            <select className="ls-select" style={{ width: 150 }} value={batchFilter} onChange={e => setBatchFilter(e.target.value)}>
+              <option value="">All Batches</option>
+              {batchOptions.map(batch => <option key={batch} value={batch}>{batch}</option>)}
+            </select>
+            <select className="ls-select" style={{ width: 170 }} value={courseFilter} onChange={e => setCourseFilter(e.target.value)}>
+              <option value="">All Courses</option>
+              {courseOptions.map(course => <option key={course} value={course}>{course}</option>)}
+            </select>
+            <select className="ls-select" style={{ width: 170 }} value={trainerFilter} onChange={e => setTrainerFilter(e.target.value)}>
+              <option value="">All Trainers</option>
+              {trainerOptions.map(trainer => <option key={trainer} value={trainer}>{trainer}</option>)}
+            </select>
+            <button className="ls-btn ls-btn-ghost ls-btn-sm" onClick={clearAllFilters}><i className="fas fa-times" /> Clear</button>
             <button className="ls-btn ls-btn-ghost ls-btn-icon" onClick={load} title="Refresh">
               <i className="fas fa-sync-alt" />
             </button>
@@ -1319,7 +1510,7 @@ export function BatchesList({ staffView = false }) {
                   <th>Batch</th>
                   <th>Type</th>
                   <th>Course</th>
-                  <th>Fee</th>          {/* ← ADD */}
+                  <th>Fee</th>
                   <th>Faculty</th>
                   <th>Start</th>
                   <th>End</th>

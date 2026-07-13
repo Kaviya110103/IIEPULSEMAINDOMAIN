@@ -5,8 +5,10 @@ const parseAllowedHosts = () => {
   const hosts = process.env.VITE_ALLOWED_HOSTS
   return hosts
     ? hosts.split(',').map(host => host.trim()).filter(Boolean)
-    : ['localhost', '127.0.0.1', '192.168.1.8']
+    : ['localhost', '127.0.0.1', 'testiie.indrainstitute.com']
 }
+
+const productionBackend = 'https://testiie.indrainstitute.com'
 
 export default defineConfig({
   plugins: [react()],
@@ -17,11 +19,11 @@ export default defineConfig({
     allowedHosts: parseAllowedHosts(),
     proxy: {
       '/api': {
-        target: process.env.VITE_API_PROXY_TARGET || 'http://localhost:8000',
+        target: process.env.VITE_API_PROXY_TARGET || productionBackend,
         changeOrigin: true,
       },
       '/media': {
-        target: process.env.VITE_API_PROXY_TARGET || 'http://localhost:8000',
+        target: process.env.VITE_API_PROXY_TARGET || productionBackend,
         changeOrigin: true,
       },
     },

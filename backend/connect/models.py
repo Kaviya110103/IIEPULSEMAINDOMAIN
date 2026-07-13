@@ -103,14 +103,17 @@ class Batches ( models.Model ) :
     def save ( self , *args , **kwargs ) :
         # Auto-copy logsheet from course if not provided
         if not self.course_logsheet and self.course_name.course_logsheet :
-            # Create a copy of the file
             import os
-            from django.core.files import File
+            from django.core.files.base import ContentFile
             
             original_file = self.course_name.course_logsheet
-            if original_file :
+            if original_file and original_file.storage.exists(original_file.name) :
                 filename = os.path.basename ( original_file.name )
-                self.course_logsheet.save ( filename , File ( original_file ) , save = False )
+                original_file.open('rb')
+                try:
+                    self.course_logsheet.save ( filename , ContentFile(original_file.read()) , save = False )
+                finally:
+                    original_file.close()
         
         super ( ).save ( *args , **kwargs )
         
@@ -1390,6 +1393,10 @@ class CounselorAnnouncement(models.Model):
     recipient_type    = models.CharField(max_length=20, choices=RECIPIENT_TYPES, default='all')
     branch            = models.CharField(max_length=100)
     is_published      = models.BooleanField(default=True)
+    is_important      = models.BooleanField(default=False)
+    allow_comments    = models.BooleanField(default=False)
+    published_at      = models.DateTimeField(null=True, blank=True)
+    views_count       = models.PositiveIntegerField(default=0)
     created_by        = models.ForeignKey(User, on_delete=models.CASCADE, related_name='counselor_announcements_created')
 
     # Specific targeting
@@ -1398,7 +1405,11 @@ class CounselorAnnouncement(models.Model):
         related_name='counselor_announcements'
     )
     specific_students = models.ManyToManyField(
-        'Students', blank=True, related_name='counselor_specific_announcements'
+        'Students',
+        through='CounselorAnnouncementSpecificStudent',
+        through_fields=('announcement', 'student'),
+        blank=True,
+        related_name='counselor_specific_announcements'
     )
 
     created_at = models.DateTimeField(auto_now_add=True)
@@ -1410,6 +1421,23 @@ class CounselorAnnouncement(models.Model):
     class Meta:
         db_table = 'counselor_announcement'
         ordering = ['-created_at']
+
+
+class CounselorAnnouncementSpecificStudent(models.Model):
+    announcement = models.ForeignKey(
+        CounselorAnnouncement,
+        on_delete=models.CASCADE,
+        db_column='announcement_id',
+    )
+    student = models.ForeignKey(
+        Students,
+        on_delete=models.CASCADE,
+        db_column='students_id',
+    )
+
+    class Meta:
+        db_table = 'counselor_announcement_specific_students'
+        managed = False
 
 
 class CourseType(models.Model):

@@ -568,15 +568,15 @@ export default function App() {
             })}
           </View>
 
-          {isPracticeAttempt ||
-          quiz.max_attempts === 0 ||
-          (quiz.user_attempts || 0) + 1 < (quiz.max_attempts || 0) ? (
+          {isPracticeAttempt ? (
             <TouchableOpacity style={styles.restartBtn} onPress={handleRestart}>
-              <Text style={styles.restartText}>
-                {isAssignedTestAttempt || isPracticeAttempt ? "Retry Test" : "Retry Quiz"}
-              </Text>
+              <Text style={styles.restartText}>Retry Test</Text>
             </TouchableOpacity>
-          ) : null}
+          ) : (
+            <TouchableOpacity style={styles.backBtn} onPress={returnToSource}>
+              <Text style={styles.backText}>Back to Quizzes</Text>
+            </TouchableOpacity>
+          )}
         </>
       )}
     </ScrollView>

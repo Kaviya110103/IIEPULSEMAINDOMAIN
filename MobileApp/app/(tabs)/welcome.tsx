@@ -86,7 +86,7 @@ const bottomNavItems: Array<{
 ];
 
 
-type AnnouncementSource = "admin" | "counselor";
+type AnnouncementSource = "admin" | "counselor" | "trainer";
 
 type AnnouncementItem = {
   id: number | string;
@@ -1664,6 +1664,7 @@ function AnnouncementModule() {
   const sourceCounts = useMemo(() => ({
     admin: announcements.filter((item) => item.source === "admin").length,
     counselor: announcements.filter((item) => item.source === "counselor").length,
+    trainer: announcements.filter((item) => item.source === "trainer").length,
   }), [announcements]);
 
   const filteredAnnouncements = useMemo(
@@ -1674,6 +1675,7 @@ function AnnouncementModule() {
   const sourceLabel: Record<AnnouncementSource, string> = {
     admin: "Admin",
     counselor: "Counselor",
+    trainer: "Trainer",
   };
 
   const formatAudience = (item: AnnouncementItem) => {
@@ -1686,7 +1688,7 @@ function AnnouncementModule() {
   return (
     <ModulePanel title="Announcements" icon="megaphone-outline">
       <View style={styles.announcementTabs}>
-        {(["admin", "counselor"] as AnnouncementSource[]).map((source) => {
+        {(["admin", "counselor", "trainer"] as AnnouncementSource[]).map((source) => {
           const active = activeSource === source;
           return (
             <Pressable

@@ -2,6 +2,7 @@ import csv
 import io
 import re
 import mimetypes
+from pathlib import Path
 from html import escape
 from django.contrib.auth import authenticate
 from django.contrib.auth.hashers import check_password, make_password
@@ -115,7 +116,7 @@ from .models import (
     Courses, Employee, Batches, Students,
     StudentAttendance, StudyMaterial, StudyMaterialAssignment, QuizTest, Question, AssignedTest, UserActivity,
     StaffLeaveRequest, StudentLeaveApplication, SupportRequest, StudentSupportRequest,
-    CourseSession, StudentSessionStatus, Student_Session_Progress, DoubtResponse, SessionNotification,
+    CourseSession, DailySessionCompletion, StudentSessionStatus, Student_Session_Progress, DoubtResponse, SessionNotification,
     Announcement, CounselorAnnouncement, CounselorLeaveRequest, CounselorSupportRequest,
     Quiz, QuizQuestion, QuizAttempt, QuizAnswer,
     CompletedStudent, SessionCompletionRequest, TestResult,FeePaymentRequest,
@@ -275,6 +276,125 @@ def format_student_activity(activity):
         'logout_time': activity.logout_time,
         'last_seen': activity.last_seen,
     }
+
+
+def build_monitoring_pdf_response(title, subtitle, columns, rows, filename):
+    from reportlab.lib import colors
+    from reportlab.lib.enums import TA_CENTER
+    from reportlab.lib.pagesizes import A4, landscape
+    from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
+    from reportlab.lib.units import mm
+    from reportlab.graphics.shapes import Circle, Drawing, Rect, String, Wedge
+    from reportlab.platypus import Image, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+
+    def pdf_text(value):
+        if value is None or value == '':
+            return '-'
+        if hasattr(value, 'isoformat'):
+            try:
+                value = timezone.localtime(value)
+            except Exception:
+                pass
+            return value.strftime('%d %b %Y, %I:%M %p')
+        return str(value)
+
+    buffer = io.BytesIO()
+    doc = SimpleDocTemplate(
+        buffer,
+        pagesize=landscape(A4),
+        leftMargin=12 * mm,
+        rightMargin=12 * mm,
+        topMargin=12 * mm,
+        bottomMargin=12 * mm,
+    )
+
+    styles = getSampleStyleSheet()
+    title_style = ParagraphStyle(
+        'MonitoringTitle',
+        parent=styles['Title'],
+        fontName='Helvetica-Bold',
+        fontSize=18,
+        alignment=TA_CENTER,
+        textColor=colors.HexColor('#0f1b2d'),
+        spaceAfter=6,
+    )
+    subtitle_style = ParagraphStyle(
+        'MonitoringSubtitle',
+        parent=styles['Normal'],
+        fontSize=9,
+        alignment=TA_CENTER,
+        textColor=colors.HexColor('#64748b'),
+        spaceAfter=12,
+    )
+    cell_style = ParagraphStyle(
+        'MonitoringCell',
+        parent=styles['Normal'],
+        fontSize=8,
+        leading=10,
+        textColor=colors.HexColor('#0f172a'),
+    )
+    header_style = ParagraphStyle(
+        'MonitoringHeaderCell',
+        parent=cell_style,
+        fontName='Helvetica-Bold',
+        textColor=colors.white,
+    )
+
+    data = [[Paragraph(label, header_style) for label, _ in columns]]
+    for row in rows:
+        data.append([Paragraph(pdf_text(row.get(key)), cell_style) for _, key in columns])
+
+    if len(data) == 1:
+        data.append([Paragraph('No records found', cell_style)] + [''] * (len(columns) - 1))
+
+    table = Table(data, repeatRows=1)
+    table.setStyle(TableStyle([
+        ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#1572e8')),
+        ('GRID', (0, 0), (-1, -1), 0.35, colors.HexColor('#d9e2ec')),
+        ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+        ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, colors.HexColor('#f8fafc')]),
+        ('LEFTPADDING', (0, 0), (-1, -1), 5),
+        ('RIGHTPADDING', (0, 0), (-1, -1), 5),
+        ('TOPPADDING', (0, 0), (-1, -1), 5),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 5),
+    ]))
+
+    generated_at = timezone.localtime(timezone.now()).strftime('%d %b %Y, %I:%M %p')
+    logo_path = Path(settings.BASE_DIR) / 'connect' / 'assets' / 'IIE.png'
+    header_left = ''
+    if logo_path.exists():
+        header_left = Image(str(logo_path), width=28 * mm, height=18 * mm)
+
+    header = Table(
+        [[
+            header_left,
+            [
+                Paragraph(title, title_style),
+                Paragraph(f"{subtitle} | Generated: {generated_at} | Records: {len(rows)}", subtitle_style),
+            ],
+            '',
+        ]],
+        colWidths=[35 * mm, None, 35 * mm],
+    )
+    header.setStyle(TableStyle([
+        ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+        ('LEFTPADDING', (0, 0), (-1, -1), 0),
+        ('RIGHTPADDING', (0, 0), (-1, -1), 0),
+        ('TOPPADDING', (0, 0), (-1, -1), 0),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 8),
+    ]))
+
+    story = [
+        header,
+        Spacer(1, 4),
+        table,
+    ]
+    doc.build(story)
+    buffer.seek(0)
+
+    response = HttpResponse(buffer.getvalue(), content_type='application/pdf')
+    response['Content-Disposition'] = f'attachment; filename="{filename}"'
+    return response
 
 
 def generate_staff_id():
@@ -481,6 +601,7 @@ class AdminDashboardView(APIView):
         }
         branches = sorted(branch_set, key=lambda branch: (branch_order.index(branch) if branch in branch_order else len(branch_order), branch))
         branch_usage_stats = []
+        branch_tracking_cards = []
         for branch in branches:
             values = branch_values(branch)
             active_branch_students = active_students.filter(branch__in=values)
@@ -505,6 +626,45 @@ class AdminDashboardView(APIView):
                 'staff_usage_percentage': clamp_percentage((staff_logged / staff_total) * 100) if staff_total else 0,
                 'student_usage_percentage': clamp_percentage((student_logged / student_total) * 100) if student_total else 0,
             })
+            staff_qs = Employee.objects.filter(branch__in=values)
+            branch_batches = Batches.objects.filter(branch__in=values)
+            branch_students = Students.objects.filter(branch__in=values).distinct()
+            branch_attendance = StudentAttendance.objects.filter(staff__branch__in=values).count()
+            branch_daily_sessions = DailySessionCompletion.objects.filter(
+                faculty__branch__in=values,
+                completed=True,
+            ).values('session_id').distinct().count()
+            branch_direct_sessions = CourseSession.objects.filter(
+                batch__branch__in=values,
+                staff_completed=True,
+            ).count()
+            branch_sessions_completed = max(branch_daily_sessions, branch_direct_sessions)
+            branch_material_uploads = StudyMaterial.objects.filter(uploaded_by__branch__in=values).count()
+            branch_material_assignments = StudyMaterialAssignment.objects.filter(assigned_by__branch__in=values).count()
+            branch_quizzes_created = Quiz.objects.filter(created_by__branch__in=values).count()
+            branch_login_days = UserActivity.objects.filter(
+                user_type='employee',
+                employee__branch__in=values,
+                login_time__gte=timezone.now() - timedelta(days=7),
+            ).count()
+            branch_score_parts = [
+                min(branch_sessions_completed * 2, 30),
+                min((branch_material_uploads + branch_material_assignments) * 3, 25),
+                min(branch_quizzes_created * 4, 25),
+                min(branch_login_days * 3, 20),
+            ]
+            branch_tracking_cards.append({
+                'branch': branch,
+                'staff_count': staff_qs.count(),
+                'student_count': branch_students.count(),
+                'batch_count': branch_batches.count(),
+                'attendance_marked_count': branch_attendance,
+                'sessions_completed': branch_sessions_completed,
+                'materials_count': branch_material_uploads + branch_material_assignments,
+                'tests_count': 0,
+                'quizzes_count': branch_quizzes_created,
+                'activity_score': min(round(sum(branch_score_parts), 1), 100),
+            })
         return Response({
             'student_count': active_students.count(),
             'student_branch_counts': [
@@ -520,6 +680,7 @@ class AdminDashboardView(APIView):
                 for item in completed_branch_counts
             ],
             'branch_usage_stats': branch_usage_stats,
+            'branch_tracking_cards': branch_tracking_cards,
             'employee_count': Employee.objects.count(),
             'mentor_count': Employee.objects.filter(designation__iexact='mentor').count(),
             'course_count': Courses.objects.count(),
@@ -576,10 +737,74 @@ class StudentDashboardView(APIView):
         attendance = StudentAttendance.objects.filter(student=student)
         total_att = attendance.count()
         present_att = attendance.filter(status='Present').count()
-        announcements = Announcement.objects.filter(
-            Q(recipient_type='all') | Q(recipient_type='students'),
-            is_published=True
-        ).order_by('-created_at')[:5]
+
+        admin_items = []
+        admin_qs = Announcement.objects.prefetch_related('specific_students').filter(
+            is_published=True,
+            created_by__is_staff=True,
+            recipient_type__in=['all', 'students', 'specific'],
+        ).order_by('-created_at')
+        for announcement in admin_qs:
+            if _admin_announcement_visible_to_student(announcement, student):
+                is_selected = announcement.specific_students.filter(id=student.id).exists()
+                admin_items.append(_serialize_mobile_announcement(
+                    AnnouncementSerializer(announcement).data,
+                    'admin',
+                    'Admin',
+                    'Selected Student' if is_selected else None,
+                ))
+
+        counselor_qs = CounselorAnnouncement.objects.select_related(
+            'specific_batch',
+            'created_by',
+            'created_by__employee',
+        ).prefetch_related('specific_students').filter(
+            is_published=True,
+            created_by__employee__designation__iexact='counselor',
+        ).distinct().order_by('-created_at')
+        counselor_items = [
+            _serialize_mobile_announcement(
+                CounselorAnnouncementSerializer(announcement).data,
+                'counselor',
+                'Counselor',
+                announcement.specific_batch.batch_number
+                if announcement.recipient_type == 'specific_batch' and announcement.specific_batch
+                else None,
+            )
+            for announcement in counselor_qs
+            if _counselor_announcement_visible_to_student(announcement, student)
+        ]
+
+        trainer_user_ids = Employee.objects.filter(
+            Q(designation__iexact='trainer') | Q(designation__iexact='mentor')
+        ).values_list('user_id', flat=True)
+        trainer_qs = CounselorAnnouncement.objects.select_related(
+            'specific_batch',
+            'specific_batch__faculty',
+            'created_by',
+        ).prefetch_related('specific_students').filter(
+            is_published=True,
+            created_by_id__in=trainer_user_ids,
+            recipient_type__in=['specific_batch', 'specific_student'],
+        ).distinct().order_by('-created_at')
+        trainer_items = [
+            _serialize_mobile_announcement(
+                CounselorAnnouncementSerializer(announcement).data,
+                'trainer',
+                'Trainer',
+                announcement.specific_batch.batch_number
+                if announcement.recipient_type == 'specific_batch' and announcement.specific_batch
+                else 'Selected Student',
+            )
+            for announcement in trainer_qs
+            if _trainer_announcement_visible_to_student(announcement, student)
+        ]
+
+        visible_announcements = sorted(
+            admin_items + counselor_items + trainer_items,
+            key=lambda item: item.get('created_at') or '',
+            reverse=True,
+        )
 
           # -- ADD THIS: Calculate completed sessions count -------------
         completed_sessions_count = Student_Session_Progress.objects.filter(
@@ -588,9 +813,24 @@ class StudentDashboardView(APIView):
         ).count()
         # -------------------------------------------------------------
 
-        # -- ADD THIS: Calculate total tests and quizzes --------------
-        tests_count = TestResult.objects.filter(student=student).count()
-        quizzes_count = QuizAttempt.objects.filter(student=student).count()
+        # Match the student web modules: count assigned items, not only submitted results.
+        if student.assigned_batch:
+            assigned_test_ids = set(AssignedTest.objects.filter(
+                batch=student.assigned_batch
+            ).values_list('test_id', flat=True))
+            if student.assigned_staff:
+                mentor_test_ids = Question.objects.filter(
+                    test__created_by=student.assigned_staff,
+                ).values_list('test_id', flat=True).distinct()
+                assigned_test_ids.update(mentor_test_ids)
+            tests_count = len(assigned_test_ids)
+            quizzes_count = Quiz.objects.filter(
+                batch=student.assigned_batch,
+                is_published=True,
+            ).distinct().count()
+        else:
+            tests_count = 0
+            quizzes_count = 0
         materials_count = StudyMaterial.objects.filter(
             batch=student.assigned_batch
         ).count() if student.assigned_batch else 0
@@ -602,7 +842,8 @@ class StudentDashboardView(APIView):
             'attendance_percentage': round((present_att / total_att * 100) if total_att else 0, 1),
             'total_classes': total_att,
             'present_classes': present_att,
-            'announcements': AnnouncementSerializer(announcements, many=True).data,
+            'announcements_count': len(visible_announcements),
+            'announcements': visible_announcements[:5],
              # -- ADD THESE NEW FIELDS ---------------------------------
             'completed_sessions_count': completed_sessions_count,
             'tests_count': tests_count,
@@ -1516,18 +1757,25 @@ def assign_staff_to_student(request, student_id):
             StudentSessionStatus.objects.filter(student=student).delete()
 
             for session in sessions:
+                existing_staff_completed = bool(session.staff_completed) or Student_Session_Progress.objects.filter(
+                    session=session,
+                    staff_completed=True,
+                ).exists()
+                staff_completed_at = (session.completed_date or timezone.now()) if existing_staff_completed else None
                 Student_Session_Progress.objects.create(
                     student=student,
                     session=session,
                     completed=False,
-                    staff_completed=False,
-                    student_status="not_started"
+                    staff_completed=existing_staff_completed,
+                    staff_completed_at=staff_completed_at,
+                    student_status="pending" if existing_staff_completed else "not_started"
                 )
                 StudentSessionStatus.objects.create(
                     student=student,
                     session=session,
-                    staff_completed=False,
-                    student_status="pending"
+                    staff_completed=existing_staff_completed,
+                    staff_completed_at=staff_completed_at,
+                    student_status="pending" if existing_staff_completed else "not_started"
                 )
 
             # -- Create fee record -----------------------------------------
@@ -1614,6 +1862,15 @@ def mark_attendance(request):
     batch_id = request.data.get('batch_id')
     date = request.data.get('date')
     attendance_data = request.data.get('attendance', [])
+    attendance_date = parse_date(str(date or ''))
+    today = timezone.localdate()
+    allowed_dates = {today, today - timedelta(days=1)}
+
+    if not attendance_date:
+        return Response({'error': 'Valid attendance date is required.'}, status=400)
+    if attendance_date not in allowed_dates:
+        return Response({'error': 'Attendance can be marked only for today or yesterday.'}, status=400)
+
     try:
         batch = Batches.objects.get(id=batch_id)
     except Batches.DoesNotExist:
@@ -1630,7 +1887,7 @@ def mark_attendance(request):
             student = Students.objects.get(id=item['student_id'])
             att, _ = StudentAttendance.objects.update_or_create(
                 student=student,
-                date=date,
+                date=attendance_date,
                 defaults={
                     'batch': batch,
                     'staff': staff,
@@ -1833,6 +2090,40 @@ def material_library_delete(request, pk):
 
     material.delete()
     return Response({'message': 'Deleted.'}, status=204)
+
+
+@api_view(['PATCH', 'PUT'])
+@permission_classes([IsAuthenticated])
+@parser_classes([MultiPartParser, FormParser, JSONParser])
+def update_material(request, pk):
+    emp = _get_employee_for_request(request)
+    if not emp and not (request.user.is_superuser or request.user.is_staff):
+        return Response({'error': 'Only employees can edit materials.'}, status=status.HTTP_403_FORBIDDEN)
+
+    try:
+        material = StudyMaterial.objects.get(id=pk)
+    except StudyMaterial.DoesNotExist:
+        return Response({'error': 'Material not found.'}, status=status.HTTP_404_NOT_FOUND)
+
+    if emp and material.uploaded_by_id != emp.id and not (request.user.is_superuser or request.user.is_staff):
+        return Response({'error': 'You can edit only your uploaded materials.'}, status=status.HTTP_403_FORBIDDEN)
+
+    serializer = StudyMaterialSerializer(material, data=request.data, partial=True, context={'request': request})
+    serializer.is_valid(raise_exception=True)
+    material = serializer.save()
+
+    batch_id = request.data.get('batch') or request.data.get('batch_id')
+    if batch_id:
+        try:
+            _assign_material_to_batch(material, batch_id, emp or material.uploaded_by)
+            if not material.is_library:
+                material.assignments.exclude(batch_id=batch_id).delete()
+        except Batches.DoesNotExist:
+            return Response({'error': 'Selected batch is invalid.'}, status=status.HTTP_400_BAD_REQUEST)
+        except ValueError as exc:
+            return Response({'error': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+    return Response(StudyMaterialSerializer(material, context={'request': request}).data)
 
 
 @api_view(['GET'])
@@ -2259,6 +2550,35 @@ def _counselor_announcement_visible_to_student(announcement, student):
     return bool(creator_branch and creator_branch == student_branch)
 
 
+def _trainer_announcement_visible_to_student(announcement, student):
+    creator_emp = Employee.objects.filter(user=announcement.created_by).first()
+    if not creator_emp:
+        return False
+    if (creator_emp.designation or '').strip().lower() not in ['trainer', 'mentor']:
+        return False
+
+    if announcement.recipient_type == 'specific_batch':
+        return bool(
+            student.assigned_batch_id
+            and announcement.specific_batch_id == student.assigned_batch_id
+            and (
+                student.assigned_staff_id == creator_emp.id
+                or student.assigned_batch.faculty_id == creator_emp.id
+            )
+        )
+
+    if announcement.recipient_type == 'specific_student':
+        return announcement.specific_students.filter(id=student.id).exists() and (
+            student.assigned_staff_id == creator_emp.id
+            or (
+                student.assigned_batch_id
+                and student.assigned_batch.faculty_id == creator_emp.id
+            )
+        )
+
+    return False
+
+
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
 def student_announcements(request):
@@ -2271,43 +2591,82 @@ def student_announcements(request):
     except Students.DoesNotExist:
         return Response({'error': 'Student profile not found'}, status=404)
 
-    admin_items = []
-    admin_qs = Announcement.objects.prefetch_related('specific_students').filter(
-        is_published=True,
-        created_by__is_staff=True,
-        recipient_type__in=['all', 'students', 'specific'],
-    ).order_by('-created_at')
-    for announcement in admin_qs:
-        if _admin_announcement_visible_to_student(announcement, student):
-            is_selected = announcement.specific_students.filter(id=student.id).exists()
-            admin_items.append(_serialize_mobile_announcement(
-                AnnouncementSerializer(announcement).data,
-                'admin',
-                'Admin',
-                'Selected Student' if is_selected else None,
-            ))
+    requested_sources = {
+        source.strip().lower()
+        for source in (request.query_params.get('sources') or '').split(',')
+        if source.strip()
+    }
+    include_all_sources = not requested_sources
 
-    counselor_qs = CounselorAnnouncement.objects.select_related(
-        'specific_batch',
-        'created_by',
-    ).prefetch_related('specific_students').filter(
-        is_published=True,
-    ).distinct().order_by('-created_at')
-    counselor_items = [
-        _serialize_mobile_announcement(
-            CounselorAnnouncementSerializer(announcement).data,
-            'counselor',
-            'Counselor',
-            announcement.specific_batch.batch_number
-            if announcement.recipient_type == 'specific_batch' and announcement.specific_batch
-            else None,
-        )
-        for announcement in counselor_qs
-        if _counselor_announcement_visible_to_student(announcement, student)
-    ]
+    admin_items = []
+    if include_all_sources or 'admin' in requested_sources:
+        admin_qs = Announcement.objects.prefetch_related('specific_students').filter(
+            is_published=True,
+            created_by__is_staff=True,
+            recipient_type__in=['all', 'students', 'specific'],
+        ).order_by('-created_at')
+        for announcement in admin_qs:
+            if _admin_announcement_visible_to_student(announcement, student):
+                is_selected = announcement.specific_students.filter(id=student.id).exists()
+                admin_items.append(_serialize_mobile_announcement(
+                    AnnouncementSerializer(announcement).data,
+                    'admin',
+                    'Admin',
+                    'Selected Student' if is_selected else None,
+                ))
+
+    counselor_items = []
+    if include_all_sources or 'counselor' in requested_sources or 'counsellor' in requested_sources:
+        counselor_qs = CounselorAnnouncement.objects.select_related(
+            'specific_batch',
+            'created_by',
+            'created_by__employee',
+        ).prefetch_related('specific_students').filter(
+            is_published=True,
+            created_by__employee__designation__iexact='counselor',
+        ).distinct().order_by('-created_at')
+        counselor_items = [
+            _serialize_mobile_announcement(
+                CounselorAnnouncementSerializer(announcement).data,
+                'counselor',
+                'Counselor',
+                announcement.specific_batch.batch_number
+                if announcement.recipient_type == 'specific_batch' and announcement.specific_batch
+                else None,
+            )
+            for announcement in counselor_qs
+            if _counselor_announcement_visible_to_student(announcement, student)
+        ]
+
+    trainer_items = []
+    if include_all_sources or 'trainer' in requested_sources or 'mentor' in requested_sources:
+        trainer_user_ids = Employee.objects.filter(
+            Q(designation__iexact='trainer') | Q(designation__iexact='mentor')
+        ).values_list('user_id', flat=True)
+        trainer_qs = CounselorAnnouncement.objects.select_related(
+            'specific_batch',
+            'specific_batch__faculty',
+            'created_by',
+        ).prefetch_related('specific_students').filter(
+            is_published=True,
+            created_by_id__in=trainer_user_ids,
+            recipient_type__in=['specific_batch', 'specific_student'],
+        ).distinct().order_by('-created_at')
+        trainer_items = [
+            _serialize_mobile_announcement(
+                CounselorAnnouncementSerializer(announcement).data,
+                'trainer',
+                'Trainer',
+                announcement.specific_batch.batch_number
+                if announcement.recipient_type == 'specific_batch' and announcement.specific_batch
+                else 'Selected Student',
+            )
+            for announcement in trainer_qs
+            if _trainer_announcement_visible_to_student(announcement, student)
+        ]
 
     results = sorted(
-        admin_items + counselor_items,
+        admin_items + counselor_items + trainer_items,
         key=lambda item: item.get('created_at') or '',
         reverse=True,
     )
@@ -2315,6 +2674,7 @@ def student_announcements(request):
         'results': results,
         'admin': admin_items,
         'counselor': counselor_items,
+        'trainer': trainer_items,
         'count': len(results),
     })
 
@@ -2419,113 +2779,246 @@ def upload_quiz(request):
             emp = None
         else:
             return Response({'error': 'Employee not found'}, status=404)
-    
-    batch_id = (request.data.get('batch') or request.data.get('batch_id') or '').strip()
-    batch = None
-    is_practice_quiz = batch_id in ('practice', 'all', 'public', '0')
-    if batch_id and not is_practice_quiz:
+
+    raw_batch_ids = []
+    if hasattr(request.data, 'getlist'):
+        raw_batch_ids.extend(request.data.getlist('batch_ids'))
+        raw_batch_ids.extend(request.data.getlist('batches'))
+    for key in ('batch_ids', 'batches', 'batch', 'batch_id'):
+        value = request.data.get(key)
+        if isinstance(value, str):
+            raw_batch_ids.extend([part.strip() for part in value.split(',') if part.strip()])
+        elif value:
+            raw_batch_ids.append(str(value).strip())
+    raw_batch_ids = [value for idx, value in enumerate(raw_batch_ids) if value and value not in raw_batch_ids[:idx]]
+
+    target_batches = []
+    is_practice_quiz = any(value in ('practice', 'all', 'public', '0') for value in raw_batch_ids)
+    if is_practice_quiz:
+        target_batches = [None]
+    elif not raw_batch_ids:
+        target_batches = [None]
+    else:
         try:
-            batch = Batches.objects.get(id=batch_id)
-        except Batches.DoesNotExist:
-            return Response({'error': 'Batch not found'}, status=404)
+            target_batches = list(Batches.objects.filter(id__in=raw_batch_ids))
+        except ValueError:
+            return Response({'error': 'Invalid batch selected'}, status=400)
+        if len(target_batches) != len(raw_batch_ids):
+            return Response({'error': 'One or more selected batches were not found'}, status=404)
 
     file = request.FILES.get('source_file')
     if not file:
         return Response({'error': 'Quiz file is required'}, status=400)
-    
-    quiz = Quiz.objects.create(
-        title=request.data.get('title', 'Quiz'),
-        description=request.data.get('description', ''),
-        batch=batch,
-        created_by=emp,
-        duration_minutes=int(request.data.get('duration_minutes', 30)),
-        passing_marks=int(request.data.get('passing_marks', 35)),
-        difficulty=request.data.get('difficulty', 'medium') or 'medium',
-        source_file=file,
-        is_published=True,
-        publish_date=timezone.now(),
-    )
-    
-    questions_created = 0
-    if file:
-        try:
-            file.seek(0)
-            if file.name.lower().endswith(('.xlsx', '.xls')):
-                import openpyxl
-                workbook = openpyxl.load_workbook(file, data_only=True)
-                sheet = workbook.active
-                headers = [str(cell.value or '').strip() for cell in next(sheet.iter_rows(min_row=1, max_row=1))]
-                reader = [
-                    {headers[idx]: cell.value for idx, cell in enumerate(row) if idx < len(headers)}
-                    for row in sheet.iter_rows(min_row=2)
-                ]
-            else:
-                content = file.read().decode('utf-8-sig')
-                reader = csv.DictReader(io.StringIO(content))
-            
-            for i, row in enumerate(reader, 1):
-                question_text = str(row.get('Question') or row.get('question') or '').strip()
-                option_a = str(row.get('Option_1') or row.get('Option 1') or row.get('option_a') or row.get('A') or '').strip()
-                option_b = str(row.get('Option_2') or row.get('Option 2') or row.get('option_b') or row.get('B') or '').strip()
-                option_c = str(row.get('Option_3') or row.get('Option 3') or row.get('option_c') or row.get('C') or '').strip()
-                option_d = str(row.get('Option_4') or row.get('Option 4') or row.get('option_d') or row.get('D') or '').strip()
-                correct_answer_text = str(row.get('Correct Answer') or row.get('correct_answer') or '').strip()
-                if not question_text or not option_a or not option_b:
-                    continue
-                
-                # Function to find which option matches the correct answer text
-                def find_correct_option(correct_text, opt_a, opt_b, opt_c, opt_d):
-                    correct_text_lower = correct_text.lower().strip()
-                    
-                    # Check each option
-                    if opt_a and opt_a.lower().strip() == correct_text_lower:
-                        return 'A'
-                    if opt_b and opt_b.lower().strip() == correct_text_lower:
-                        return 'B'
-                    if opt_c and opt_c.lower().strip() == correct_text_lower:
-                        return 'C'
-                    if opt_d and opt_d.lower().strip() == correct_text_lower:
-                        return 'D'
-                    
-                    if correct_text_lower in ('a', '1', 'option 1', 'option_1'):
-                        return 'A'
-                    if correct_text_lower in ('b', '2', 'option 2', 'option_2'):
-                        return 'B'
-                    if correct_text_lower in ('c', '3', 'option 3', 'option_3'):
-                        return 'C'
-                    if correct_text_lower in ('d', '4', 'option 4', 'option_4'):
-                        return 'D'
-                    return 'A'
-                
-                correct_answer = find_correct_option(correct_answer_text, option_a, option_b, option_c, option_d)
-                
-                QuizQuestion.objects.create(
-                    quiz=quiz, 
-                    question_number=i,
-                    question_text=question_text,
-                    option_a=option_a,
-                    option_b=option_b,
-                    option_c=option_c,
-                    option_d=option_d,
-                    correct_answer=correct_answer,
-                    marks=int(row.get('marks', 1) or 1),
-                )
-                questions_created += 1
-                
-            quiz.total_questions = questions_created
-            quiz.total_marks = questions_created
-            quiz.save()
-            
-        except Exception as e:
-            quiz.delete()
-            logger.exception("Error parsing quiz upload")
-            return Response({'error': f'Could not parse quiz file: {e}'}, status=400)
-            
-    if questions_created == 0:
-        quiz.delete()
+
+    def find_correct_option(correct_text, opt_a, opt_b, opt_c, opt_d):
+        correct_text_lower = correct_text.lower().strip()
+        if opt_a and opt_a.lower().strip() == correct_text_lower:
+            return 'A'
+        if opt_b and opt_b.lower().strip() == correct_text_lower:
+            return 'B'
+        if opt_c and opt_c.lower().strip() == correct_text_lower:
+            return 'C'
+        if opt_d and opt_d.lower().strip() == correct_text_lower:
+            return 'D'
+        if correct_text_lower in ('a', '1', 'option 1', 'option_1'):
+            return 'A'
+        if correct_text_lower in ('b', '2', 'option 2', 'option_2'):
+            return 'B'
+        if correct_text_lower in ('c', '3', 'option 3', 'option_3'):
+            return 'C'
+        if correct_text_lower in ('d', '4', 'option 4', 'option_4'):
+            return 'D'
+        return 'A'
+
+    try:
+        file.seek(0)
+        if file.name.lower().endswith(('.xlsx', '.xls')):
+            import openpyxl
+            workbook = openpyxl.load_workbook(file, data_only=True)
+            sheet = workbook.active
+            headers = [str(cell.value or '').strip() for cell in next(sheet.iter_rows(min_row=1, max_row=1))]
+            reader = [
+                {headers[idx]: cell.value for idx, cell in enumerate(row) if idx < len(headers)}
+                for row in sheet.iter_rows(min_row=2)
+            ]
+        else:
+            content = file.read().decode('utf-8-sig')
+            reader = csv.DictReader(io.StringIO(content))
+
+        questions = []
+        for i, row in enumerate(reader, 1):
+            question_text = str(row.get('Question') or row.get('question') or '').strip()
+            option_a = str(row.get('Option_1') or row.get('Option 1') or row.get('option_a') or row.get('A') or '').strip()
+            option_b = str(row.get('Option_2') or row.get('Option 2') or row.get('option_b') or row.get('B') or '').strip()
+            option_c = str(row.get('Option_3') or row.get('Option 3') or row.get('option_c') or row.get('C') or '').strip()
+            option_d = str(row.get('Option_4') or row.get('Option 4') or row.get('option_d') or row.get('D') or '').strip()
+            correct_answer_text = str(row.get('Correct Answer') or row.get('correct_answer') or '').strip()
+            if not question_text or not option_a or not option_b:
+                continue
+            questions.append({
+                'question_number': len(questions) + 1,
+                'question_text': question_text,
+                'option_a': option_a,
+                'option_b': option_b,
+                'option_c': option_c,
+                'option_d': option_d,
+                'correct_answer': find_correct_option(correct_answer_text, option_a, option_b, option_c, option_d),
+                'marks': int(row.get('marks', 1) or 1),
+            })
+    except Exception as e:
+        logger.exception("Error parsing quiz upload")
+        return Response({'error': f'Could not parse quiz file: {e}'}, status=400)
+
+    if not questions:
         return Response({'error': 'No valid questions found in the uploaded file.'}, status=400)
 
-    return Response({'message': 'Quiz created', 'quiz_id': quiz.id, 'questions': questions_created}, status=201)
+    created_quizzes = []
+    with transaction.atomic():
+        for batch in target_batches:
+            file.seek(0)
+            quiz = Quiz.objects.create(
+                title=request.data.get('title', 'Quiz'),
+                description=request.data.get('description', ''),
+                batch=batch,
+                created_by=emp,
+                duration_minutes=int(request.data.get('duration_minutes', 30)),
+                passing_marks=int(request.data.get('passing_marks', 35)),
+                difficulty=request.data.get('difficulty', 'medium') or 'medium',
+                source_file=file,
+                total_questions=len(questions),
+                total_marks=sum(item['marks'] for item in questions),
+                is_published=bool(raw_batch_ids),
+                publish_date=timezone.now() if raw_batch_ids else None,
+            )
+            QuizQuestion.objects.bulk_create([
+                QuizQuestion(quiz=quiz, **question)
+                for question in questions
+            ])
+            created_quizzes.append(quiz)
+
+    return Response({
+        'message': f'Quiz created for {len(created_quizzes)} batch(es)' if raw_batch_ids else 'Quiz uploaded. Assign it to batches from Manage Quizzes.',
+        'quiz_ids': [quiz.id for quiz in created_quizzes],
+        'quiz_id': created_quizzes[0].id,
+        'questions': len(questions),
+    }, status=201)
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def assign_quiz_to_batches(request, quiz_id):
+    try:
+        emp = Employee.objects.get(user=request.user)
+    except Employee.DoesNotExist:
+        if request.user.is_superuser or request.user.is_staff:
+            emp = None
+        else:
+            return Response({'error': 'Employee not found'}, status=404)
+
+    try:
+        quiz = Quiz.objects.prefetch_related('questions').get(id=quiz_id)
+    except Quiz.DoesNotExist:
+        return Response({'error': 'Quiz not found'}, status=404)
+
+    if emp and quiz.created_by_id != emp.id:
+        return Response({'error': 'You can assign only your uploaded quizzes.'}, status=403)
+
+    raw_batch_ids = []
+    if hasattr(request.data, 'getlist'):
+        raw_batch_ids.extend(request.data.getlist('batch_ids'))
+        raw_batch_ids.extend(request.data.getlist('batches'))
+    for key in ('batch_ids', 'batches', 'batch', 'batch_id'):
+        value = request.data.get(key)
+        if isinstance(value, list):
+            raw_batch_ids.extend([str(item).strip() for item in value if str(item).strip()])
+        elif isinstance(value, str):
+            raw_batch_ids.extend([part.strip() for part in value.split(',') if part.strip()])
+        elif value:
+            raw_batch_ids.append(str(value).strip())
+    raw_batch_ids = [value for idx, value in enumerate(raw_batch_ids) if value and value not in raw_batch_ids[:idx]]
+
+    if not raw_batch_ids:
+        return Response({'error': 'Select at least one batch'}, status=400)
+
+    try:
+        batches = list(Batches.objects.filter(id__in=raw_batch_ids))
+    except ValueError:
+        return Response({'error': 'Invalid batch selected'}, status=400)
+    if len(batches) != len(raw_batch_ids):
+        return Response({'error': 'One or more selected batches were not found'}, status=404)
+
+    questions = list(quiz.questions.all().order_by('question_number'))
+    if not questions:
+        return Response({'error': 'Cannot assign a quiz without questions.'}, status=400)
+
+    assigned_quizzes = []
+    with transaction.atomic():
+        reusable_quiz = quiz if quiz.batch_id is None else None
+        for batch in batches:
+            existing = Quiz.objects.filter(
+                title=quiz.title,
+                created_by=quiz.created_by,
+                batch=batch,
+            ).first()
+            if existing:
+                existing.is_published = True
+                existing.publish_date = existing.publish_date or timezone.now()
+                existing.save(update_fields=['is_published', 'publish_date', 'updated_at'])
+                assigned_quizzes.append(existing)
+                continue
+
+            if reusable_quiz is not None:
+                target_quiz = reusable_quiz
+                target_quiz.batch = batch
+                target_quiz.is_published = True
+                target_quiz.publish_date = timezone.now()
+                target_quiz.save(update_fields=['batch', 'is_published', 'publish_date', 'updated_at'])
+                reusable_quiz = None
+            else:
+                target_quiz = Quiz.objects.create(
+                    title=quiz.title,
+                    description=quiz.description,
+                    batch=batch,
+                    created_by=quiz.created_by,
+                    source_file=quiz.source_file,
+                    total_questions=quiz.total_questions,
+                    total_marks=quiz.total_marks,
+                    passing_marks=quiz.passing_marks,
+                    duration_minutes=quiz.duration_minutes,
+                    difficulty=quiz.difficulty,
+                    category=quiz.category,
+                    start_date=quiz.start_date,
+                    end_date=quiz.end_date,
+                    shuffle_questions=quiz.shuffle_questions,
+                    shuffle_options=quiz.shuffle_options,
+                    number_of_questions=quiz.number_of_questions,
+                    is_published=True,
+                    publish_date=timezone.now(),
+                    deadline=quiz.deadline,
+                    allow_retake=quiz.allow_retake,
+                    max_attempts=quiz.max_attempts,
+                )
+                QuizQuestion.objects.bulk_create([
+                    QuizQuestion(
+                        quiz=target_quiz,
+                        question_number=question.question_number,
+                        question_text=question.question_text,
+                        option_a=question.option_a,
+                        option_b=question.option_b,
+                        option_c=question.option_c,
+                        option_d=question.option_d,
+                        correct_answer=question.correct_answer,
+                        explanation=question.explanation,
+                        marks=question.marks,
+                    )
+                    for question in questions
+                ])
+            assigned_quizzes.append(target_quiz)
+
+    return Response({
+        'message': f'Quiz assigned to {len(assigned_quizzes)} batch(es).',
+        'quiz_ids': [item.id for item in assigned_quizzes],
+    })
 
 
 @api_view(['POST'])
@@ -2575,6 +3068,8 @@ def quiz_result(request, attempt_id):
 def toggle_quiz_publish(request, quiz_id):
     try:
         quiz = Quiz.objects.get(id=quiz_id)
+        if not quiz.is_published and quiz.batch_id is None:
+            return Response({'error': 'Assign this quiz to a batch before publishing.'}, status=400)
         quiz.is_published = not quiz.is_published
         if quiz.is_published:
             quiz.publish_date = timezone.now()
@@ -3152,7 +3647,8 @@ def staff_mark_session_complete(request, session_id):
 
         return Response({
             'success': True,
-            'message': f'Session {session.session_number} marked complete. {students.count()} students notified.'
+            'message': f'Session {session.session_number} marked complete. {students.count()} students notified.',
+            'session': CourseSessionSerializer(session).data,
         })
     except (Employee.DoesNotExist, CourseSession.DoesNotExist):
         return Response({'error': 'Not found'}, status=404)
@@ -3169,7 +3665,16 @@ def staff_unmark_session(request, session_id):
         StudentSessionStatus.objects.filter(session=session).update(
             staff_completed=False, status='pending'
         )
-        return Response({'success': True, 'message': 'Session unmarked.'})
+        Student_Session_Progress.objects.filter(session=session).update(
+            staff_completed=False,
+            staff_completed_at=None,
+            student_status='pending',
+        )
+        return Response({
+            'success': True,
+            'message': 'Session unmarked.',
+            'session': CourseSessionSerializer(session).data,
+        })
     except CourseSession.DoesNotExist:
         return Response({'error': 'Not found'}, status=404)
 
@@ -3187,24 +3692,23 @@ def student_mark_completed(request):
             student=student, session=session
         )
         
-        if not status_obj.staff_completed and not session.staff_completed:
+        progress, _ = Student_Session_Progress.objects.get_or_create(
+            student=student, session=session
+        )
+        trainer_completed = status_obj.staff_completed or progress.staff_completed or session.staff_completed
+        if not trainer_completed:
             return Response({'error': 'Trainer has not completed this session yet.'}, status=400)
 
         # Mark as completed by student
-        if session.staff_completed:
-            status_obj.staff_completed = True
-            status_obj.staff_completed_at = status_obj.staff_completed_at or session.completed_date or timezone.now()
+        status_obj.staff_completed = True
+        status_obj.staff_completed_at = status_obj.staff_completed_at or progress.staff_completed_at or session.completed_date or timezone.now()
         status_obj.student_status = 'completed'
         status_obj.student_confirmed_at = timezone.now()
         status_obj.save()
 
         # Update Student_Session_Progress
-        progress, _ = Student_Session_Progress.objects.get_or_create(
-            student=student, session=session
-        )
-        if session.staff_completed:
-            progress.staff_completed = True
-            progress.staff_completed_at = progress.staff_completed_at or session.completed_date or timezone.now()
+        progress.staff_completed = True
+        progress.staff_completed_at = progress.staff_completed_at or status_obj.staff_completed_at or session.completed_date or timezone.now()
         progress.completed = True
         progress.completed_date = timezone.now()
         progress.student_status = 'completed'
@@ -3456,6 +3960,12 @@ class CompletedStudentListView(generics.ListAPIView):
             if emp.branch:
                 return qs.filter(branch__iexact=emp.branch)
             return qs.none()
+        if emp:
+            batch_numbers = Batches.objects.filter(faculty=emp).values_list('batch_number', flat=True)
+            return qs.filter(
+                Q(graduated_from_trainer=emp) |
+                Q(batch_number__in=batch_numbers)
+            ).distinct()
 
         student = Students.objects.filter(user=user).first()
         if student:
@@ -3473,6 +3983,80 @@ class CompletedStudentListView(generics.ListAPIView):
                 'details': str(e),
                 'view': 'CompletedStudentListView.list'
             }, status=500)
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def completed_students_pdf(request):
+    qs = CompletedStudentListView()
+    qs.request = request
+    students_qs = qs.get_queryset()
+
+    branch = request.query_params.get('branch')
+    batch = request.query_params.get('batch')
+    course = request.query_params.get('course')
+    trainer = request.query_params.get('trainer')
+    search = request.query_params.get('search')
+    date_from = parse_date(request.query_params.get('dateFrom') or request.query_params.get('date_from') or '')
+    date_to = parse_date(request.query_params.get('dateTo') or request.query_params.get('date_to') or '')
+
+    if branch:
+        students_qs = students_qs.filter(branch__iexact=branch)
+    if batch:
+        students_qs = students_qs.filter(batch_number__iexact=batch)
+    if course:
+        students_qs = students_qs.filter(Q(course_name__iexact=course) | Q(course__iexact=course))
+    if trainer:
+        students_qs = students_qs.filter(Q(faculty_name__iexact=trainer) | Q(graduated_from_trainer__first_name__icontains=trainer) | Q(graduated_from_trainer__last_name__icontains=trainer))
+    if date_from:
+        students_qs = students_qs.filter(completion_date__date__gte=date_from)
+    if date_to:
+        students_qs = students_qs.filter(completion_date__date__lte=date_to)
+    if search:
+        students_qs = students_qs.filter(
+            Q(first_name__icontains=search) |
+            Q(last_name__icontains=search) |
+            Q(student_id__icontains=search) |
+            Q(course_name__icontains=search) |
+            Q(course__icontains=search) |
+            Q(batch_number__icontains=search) |
+            Q(branch__icontains=search) |
+            Q(faculty_name__icontains=search)
+        )
+
+    rows = []
+    for item in students_qs.order_by('-completion_date'):
+        rows.append({
+            'student': f"{item.first_name} {item.last_name or ''}".strip(),
+            'student_id': item.student_id,
+            'branch': item.branch,
+            'batch': item.batch_number,
+            'course': item.course_name or item.course,
+            'trainer': item.faculty_name,
+            'sessions': f"{item.completed_sessions_count}/{item.total_sessions_count}",
+            'completion_date': item.completion_date,
+            'attendance': f"{item.attendance_percentage}%",
+            'avg_score': f"{item.average_test_score}%",
+        })
+
+    return build_monitoring_pdf_response(
+        'IIE Completed Students',
+        'Completed students report',
+        [
+            ('Student', 'student'),
+            ('Student ID', 'student_id'),
+            ('Branch', 'branch'),
+            ('Batch', 'batch'),
+            ('Course', 'course'),
+            ('Trainer', 'trainer'),
+            ('Sessions', 'sessions'),
+            ('Completed', 'completion_date'),
+            ('Attendance', 'attendance'),
+            ('Avg Score', 'avg_score'),
+        ],
+        rows,
+        'completed_students_report.pdf',
+    )
 
 
 # -- COMPLETION REQUESTS -------------------------------------------------------
@@ -4060,6 +4644,59 @@ def admin_employee_monitoring(request):
 
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
+def admin_employee_monitoring_pdf(request):
+    if not is_admin_user(request.user):
+        return Response({'error': 'Admin access required.'}, status=status.HTTP_403_FORBIDDEN)
+
+    params = request.query_params
+    qs = UserActivity.objects.filter(user_type='employee').select_related('user', 'employee')
+    qs = prepare_activity_monitoring_queryset(qs)
+    qs = apply_activity_date_filters(qs, params)
+
+    branch = params.get('branch')
+    designation = params.get('designation')
+    search = params.get('search')
+
+    if branch:
+        qs = qs.filter(employee__branch=branch)
+    if designation:
+        qs = qs.filter(employee__designation=designation)
+    if search:
+        qs = qs.filter(
+            Q(employee__first_name__icontains=search) |
+            Q(employee__last_name__icontains=search) |
+            Q(employee__email__icontains=search) |
+            Q(employee__staff_id__icontains=search) |
+            Q(user__username__icontains=search)
+        )
+
+    records = [format_employee_activity(activity) for activity in qs.order_by('-login_time')]
+    columns = [
+        ('Name', 'name'),
+        ('Email / Staff ID', 'email'),
+        ('Designation', 'designation'),
+        ('Branch', 'branch'),
+        ('Login Time', 'login_time'),
+        ('Logout Time', 'logout_time'),
+        ('Last Seen', 'last_seen'),
+    ]
+    for record in records:
+        if record.get('staff_id'):
+            record['email'] = f"{record.get('email') or '-'} / {record['staff_id']}"
+        if not record.get('logout_time'):
+            record['logout_time'] = 'Still active'
+
+    return build_monitoring_pdf_response(
+        'Employee Monitoring Report',
+        'Login, logout, and last-seen activity for employees and counselors',
+        columns,
+        records,
+        'employee_monitoring_report.pdf',
+    )
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
 def admin_student_monitoring(request):
     if not is_admin_user(request.user):
         return Response({'error': 'Admin access required.'}, status=status.HTTP_403_FORBIDDEN)
@@ -4107,6 +4744,59 @@ def admin_student_monitoring(request):
 
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
+def admin_student_monitoring_pdf(request):
+    if not is_admin_user(request.user):
+        return Response({'error': 'Admin access required.'}, status=status.HTTP_403_FORBIDDEN)
+
+    params = request.query_params
+    qs = UserActivity.objects.filter(user_type='student').select_related('user', 'student', 'student__assigned_staff')
+    qs = prepare_activity_monitoring_queryset(qs)
+    qs = apply_activity_date_filters(qs, params)
+
+    branch = params.get('branch')
+    staff = params.get('staff')
+    search = params.get('search')
+
+    if branch:
+        qs = qs.filter(student__branch=branch)
+    if staff and str(staff).isdigit():
+        qs = qs.filter(student__assigned_staff_id=staff)
+    if search:
+        qs = qs.filter(
+            Q(student__first_name__icontains=search) |
+            Q(student__last_name__icontains=search) |
+            Q(student__email__icontains=search) |
+            Q(student__student_id__icontains=search) |
+            Q(user__username__icontains=search)
+        )
+
+    records = [format_student_activity(activity) for activity in qs.order_by('-login_time')]
+    columns = [
+        ('Student', 'name'),
+        ('Email / Student ID', 'email'),
+        ('Branch', 'branch'),
+        ('Staff Name', 'staff_name'),
+        ('Login Time', 'login_time'),
+        ('Logout Time', 'logout_time'),
+        ('Last Seen', 'last_seen'),
+    ]
+    for record in records:
+        if record.get('student_id'):
+            record['email'] = f"{record.get('email') or '-'} / {record['student_id']}"
+        if not record.get('logout_time'):
+            record['logout_time'] = 'Still active'
+
+    return build_monitoring_pdf_response(
+        'Student Monitoring Report',
+        'Login, logout, and last-seen activity for students',
+        columns,
+        records,
+        'student_monitoring_report.pdf',
+    )
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
 def mentor_student_monitoring(request):
     try:
         mentor = Employee.objects.get(user=request.user)
@@ -4141,6 +4831,59 @@ def mentor_student_monitoring(request):
             'branches': [mentor.branch] if mentor.branch else [],
         },
     })
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def mentor_student_monitoring_pdf(request):
+    try:
+        mentor = Employee.objects.get(user=request.user)
+    except Employee.DoesNotExist:
+        return Response({'error': 'Mentor access required.'}, status=status.HTTP_403_FORBIDDEN)
+
+    if mentor.designation.lower() == 'counselor':
+        return Response({'error': 'Mentor access required.'}, status=status.HTTP_403_FORBIDDEN)
+
+    params = request.query_params
+    qs = UserActivity.objects.filter(
+        user_type='student',
+        student__assigned_staff=mentor,
+    ).select_related('user', 'student', 'student__assigned_staff')
+    qs = prepare_activity_monitoring_queryset(qs)
+    qs = apply_activity_date_filters(qs, params)
+
+    search = params.get('search')
+    if search:
+        qs = qs.filter(
+            Q(student__first_name__icontains=search) |
+            Q(student__last_name__icontains=search) |
+            Q(student__email__icontains=search) |
+            Q(student__student_id__icontains=search) |
+            Q(user__username__icontains=search)
+        )
+
+    records = [format_student_activity(activity) for activity in qs.order_by('-login_time')]
+    columns = [
+        ('Student', 'name'),
+        ('Email / Student ID', 'email'),
+        ('Branch', 'branch'),
+        ('Login Time', 'login_time'),
+        ('Logout Time', 'logout_time'),
+        ('Last Seen', 'last_seen'),
+    ]
+    for record in records:
+        if record.get('student_id'):
+            record['email'] = f"{record.get('email') or '-'} / {record['student_id']}"
+        if not record.get('logout_time'):
+            record['logout_time'] = 'Still active'
+
+    return build_monitoring_pdf_response(
+        'Student Login Records Report',
+        'Login, logout, and last-seen activity for assigned students',
+        columns,
+        records,
+        'student_login_records_report.pdf',
+    )
 
 
 @api_view(['GET'])
@@ -4315,6 +5058,941 @@ def admin_branch_attendance(request):
             pass
 
     return Response({'view_mode': 'branches', 'branches': branches, 'branch_stats': branch_stats})
+
+
+def _tracking_branch_values(branch):
+    branch = (branch or '').strip()
+    if branch in ('kuniyamuthur', 'kunniyamuthur'):
+        return ['kuniyamuthur', 'kunniyamuthur']
+    return [branch]
+
+
+def _tracking_login_usage(staff):
+    week_start = timezone.now() - timedelta(days=7)
+    login_count = UserActivity.objects.filter(
+        employee=staff,
+        user_type='employee',
+        login_time__gte=week_start,
+    ).count()
+    login_target = 7
+    return {
+        'login_usage_count': login_count,
+        'login_usage_target': login_target,
+        'login_usage_percentage': round(min(100, (login_count / login_target * 100) if login_target else 0), 1),
+    }
+
+
+def _tracking_batch_completion(batch, staff, batch_students=None):
+    sessions = list(CourseSession.objects.filter(batch=batch).order_by('session_number'))
+    session_ids = [session.id for session in sessions]
+    total_sessions = len(session_ids)
+    if batch_students is None:
+        batch_students = Students.objects.filter(assigned_batch=batch)
+    student_ids = list(batch_students.values_list('id', flat=True))
+    student_count = len(student_ids)
+    if not total_sessions or not student_count:
+        return {'completed_sessions': 0, 'total_sessions': total_sessions, 'percentage': 0}
+
+    staff_done_session_ids = set(CourseSession.objects.filter(id__in=session_ids, staff_completed=True).values_list('id', flat=True))
+    staff_done_session_ids.update(DailySessionCompletion.objects.filter(
+        faculty=staff,
+        session_id__in=session_ids,
+        completed=True,
+    ).values_list('session_id', flat=True))
+
+    staff_progress_counts = {
+        row['session_id']: row['done_count']
+        for row in Student_Session_Progress.objects.filter(
+            session_id__in=session_ids,
+            student_id__in=student_ids,
+            staff_completed=True,
+        ).values('session_id').annotate(done_count=Count('student_id', distinct=True))
+    }
+    staff_done_session_ids.update(
+        session_id for session_id, count in staff_progress_counts.items() if count == student_count
+    )
+
+    student_completed_counts = {
+        row['session_id']: row['done_count']
+        for row in Student_Session_Progress.objects.filter(
+            session_id__in=session_ids,
+            student_id__in=student_ids,
+        ).filter(
+            Q(completed=True) | Q(student_status='completed')
+        ).values('session_id').annotate(done_count=Count('student_id', distinct=True))
+    }
+
+    completed_sessions = 0
+    for session_id in session_ids:
+        if session_id not in staff_done_session_ids:
+            continue
+        students_done = student_completed_counts.get(session_id, 0)
+        # Older session rows only stored staff_completed. Use that data until students start confirming sessions.
+        if students_done == 0 and staff_progress_counts.get(session_id, 0) == student_count:
+            students_done = staff_progress_counts.get(session_id, 0)
+        if students_done == student_count:
+            completed_sessions += 1
+
+    return {
+        'completed_sessions': completed_sessions,
+        'total_sessions': total_sessions,
+        'percentage': round((completed_sessions / total_sessions * 100) if total_sessions else 0, 1),
+    }
+
+
+def _tracking_staff_card_summary(staff):
+    batches = Batches.objects.filter(faculty=staff)
+    batch_count = batches.count()
+    students = Students.objects.filter(Q(assigned_staff=staff) | Q(assigned_batch__faculty=staff)).distinct()
+    sessions_total = CourseSession.objects.filter(batch__in=batches).count()
+    sessions_completed = max(
+        DailySessionCompletion.objects.filter(faculty=staff, session__batch__in=batches, completed=True).values('session_id').distinct().count(),
+        CourseSession.objects.filter(batch__in=batches, staff_completed=True).count(),
+        Student_Session_Progress.objects.filter(session__batch__in=batches, staff_completed=True).values('session_id').distinct().count(),
+    )
+    login_qs = UserActivity.objects.filter(employee=staff, user_type='employee').order_by('-login_time')
+    last_login = login_qs.first()
+    login_usage = _tracking_login_usage(staff)
+    materials_uploaded = StudyMaterial.objects.filter(uploaded_by=staff).count()
+    quizzes_created = Quiz.objects.filter(created_by=staff).count()
+    batch_completion_percentage = round((sessions_completed / sessions_total * 100) if sessions_total else 0, 1)
+    score_parts = [
+        batch_completion_percentage,
+        min((quizzes_created / max(batch_count, 1)) * 100, 100),
+        min((materials_uploaded / max(batch_count, 1)) * 100, 100),
+        login_usage['login_usage_percentage'],
+    ]
+    activity_score = round(sum(score_parts) / len(score_parts), 1)
+    return {
+        'staff': EmployeeSerializer(staff).data,
+        'batch_count': batch_count,
+        'student_count': students.count(),
+        'completed_students_count': CompletedStudent.objects.filter(graduated_from_trainer=staff, completion_type='full').count(),
+        'attendance_marked_count': StudentAttendance.objects.filter(staff=staff).count(),
+        'attendance_days_count': StudentAttendance.objects.filter(staff=staff).values('date').distinct().count(),
+        'sessions_completed': sessions_completed,
+        'total_sessions': sessions_total,
+        'session_completion_percentage': batch_completion_percentage,
+        'materials_uploaded': materials_uploaded,
+        'materials_assigned': 0,
+        'material_batch_count': 0,
+        'tests_created': QuizTest.objects.filter(created_by=staff).count(),
+        'tests_assigned': 0,
+        'quizzes_created': quizzes_created,
+        'quiz_attempts': 0,
+        'new_batches_count': batches.filter(created_at__gte=timezone.now() - timedelta(days=7)).count(),
+        'new_students_count': students.filter(created_at__gte=timezone.now() - timedelta(days=7)).count(),
+        'login_count': login_qs.count(),
+        'login_usage_count': login_usage['login_usage_count'],
+        'login_usage_target': login_usage['login_usage_target'],
+        'last_login': last_login.login_time if last_login else None,
+        'last_seen': last_login.last_seen if last_login else None,
+        'performance_graph': {},
+        'activity_score': min(activity_score, 100),
+    }
+
+
+def _tracking_staff_summary(staff):
+    new_since = timezone.now() - timedelta(days=7)
+    batches = Batches.objects.filter(faculty=staff)
+    batch_count = batches.count()
+    students = Students.objects.filter(
+        Q(assigned_staff=staff) | Q(assigned_batch__faculty=staff)
+    ).distinct()
+    attendance_total = StudentAttendance.objects.filter(staff=staff).count()
+    attendance_dates = StudentAttendance.objects.filter(staff=staff).values('date').distinct().count()
+    batch_completion_stats = [_tracking_batch_completion(batch, staff) for batch in batches]
+    sessions_total = sum(item['total_sessions'] for item in batch_completion_stats)
+    sessions_completed = sum(item['completed_sessions'] for item in batch_completion_stats)
+    completed_batch_count = sum(
+        1 for item in batch_completion_stats
+        if item['total_sessions'] > 0 and item['completed_sessions'] == item['total_sessions']
+    )
+    login_qs = UserActivity.objects.filter(employee=staff, user_type='employee').order_by('-login_time')
+    last_login = login_qs.first()
+    login_usage = _tracking_login_usage(staff)
+    materials_uploaded = StudyMaterial.objects.filter(uploaded_by=staff).count()
+    material_assignments = StudyMaterialAssignment.objects.filter(assigned_by=staff)
+    materials_assigned = material_assignments.count()
+    material_batch_count = material_assignments.values('batch_id').distinct().count()
+    quizzes_created = Quiz.objects.filter(created_by=staff).count()
+    quiz_attempts = QuizAttempt.objects.filter(quiz__batch__in=batches, is_completed=True).count()
+    completed_students = CompletedStudent.objects.filter(graduated_from_trainer=staff, completion_type='full').count()
+
+    def percent_of_target(value, target):
+        return round(min(100, (value / target * 100) if target else 0), 1)
+
+    batch_completion_percentage = round((completed_batch_count / batch_count * 100) if batch_count else 0, 1)
+    performance_graph = {
+        'batch_completion': batch_completion_percentage,
+        'quiz_upload': percent_of_target(quizzes_created, max(batch_count, 1)),
+        'material_upload': percent_of_target(materials_uploaded, max(batch_count, 1)),
+        'login_usage': login_usage['login_usage_percentage'],
+    }
+    activity_score = round(sum(performance_graph.values()) / len(performance_graph), 1)
+
+    return {
+        'staff': EmployeeSerializer(staff).data,
+        'batch_count': batch_count,
+        'completed_batch_count': completed_batch_count,
+        'student_count': students.count(),
+        'completed_students_count': completed_students,
+        'attendance_marked_count': attendance_total,
+        'attendance_days_count': attendance_dates,
+        'sessions_completed': sessions_completed,
+        'total_sessions': sessions_total,
+        'session_completion_percentage': batch_completion_percentage,
+        'materials_uploaded': materials_uploaded,
+        'materials_assigned': materials_assigned,
+        'material_batch_count': material_batch_count,
+        'tests_created': 0,
+        'tests_assigned': 0,
+        'quizzes_created': quizzes_created,
+        'quiz_attempts': quiz_attempts,
+        'new_batches_count': batches.filter(created_at__gte=new_since).count(),
+        'new_students_count': students.filter(created_at__gte=new_since).count(),
+        'login_count': login_qs.count(),
+        'login_usage_count': login_usage['login_usage_count'],
+        'login_usage_target': login_usage['login_usage_target'],
+        'last_login': last_login.login_time if last_login else None,
+        'last_seen': last_login.last_seen if last_login else None,
+        'performance_graph': performance_graph,
+        'activity_score': min(activity_score, 100),
+    }
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def admin_employee_tracking(request):
+    if not is_admin_user(request.user):
+        return Response({'error': 'Admin access required.'}, status=403)
+
+    branch = request.query_params.get('branch')
+    staff_id = request.query_params.get('staff_id')
+
+    raw_branches = Employee.objects.exclude(branch__isnull=True).exclude(branch='').values_list('branch', flat=True).distinct()
+    branch_order = ['100ft', 'hopes', 'kuniyamuthur']
+
+    def canonical_branch(value):
+        value = (value or '').strip()
+        if value == 'kunniyamuthur':
+            return 'kuniyamuthur'
+        return value
+
+    branches = sorted(
+        {canonical_branch(item) for item in raw_branches if canonical_branch(item)},
+        key=lambda value: (branch_order.index(value) if value in branch_order else len(branch_order), value),
+    )
+
+    branch_cards = []
+    for item in branches:
+        values = _tracking_branch_values(item)
+        staff_qs = Employee.objects.filter(branch__in=values)
+        branch_batches = Batches.objects.filter(branch__in=values)
+        branch_students = Students.objects.filter(branch__in=values).distinct()
+        branch_attendance = StudentAttendance.objects.filter(staff__branch__in=values).count()
+        branch_daily_sessions = DailySessionCompletion.objects.filter(
+            faculty__branch__in=values,
+            completed=True,
+        ).values('session_id').distinct().count()
+        branch_direct_sessions = CourseSession.objects.filter(batch__branch__in=values, staff_completed=True).count()
+        branch_progress_sessions = Student_Session_Progress.objects.filter(
+            session__batch__branch__in=values,
+            staff_completed=True,
+        ).values('session_id').distinct().count()
+        branch_sessions_completed = max(branch_daily_sessions, branch_direct_sessions, branch_progress_sessions)
+        branch_material_uploads = StudyMaterial.objects.filter(uploaded_by__branch__in=values).count()
+        branch_material_assignments = StudyMaterialAssignment.objects.filter(assigned_by__branch__in=values).count()
+        branch_quizzes_created = Quiz.objects.filter(created_by__branch__in=values).count()
+        branch_login_days = UserActivity.objects.filter(
+            user_type='employee',
+            employee__branch__in=values,
+            login_time__gte=timezone.now() - timedelta(days=7),
+        ).count()
+        branch_score_parts = [
+            min(branch_sessions_completed * 2, 30),
+            min((branch_material_uploads + branch_material_assignments) * 3, 25),
+            min(branch_quizzes_created * 4, 25),
+            min(branch_login_days * 3, 20),
+        ]
+        branch_cards.append({
+            'branch': item,
+            'staff_count': staff_qs.count(),
+            'student_count': branch_students.count(),
+            'batch_count': branch_batches.count(),
+            'attendance_marked_count': branch_attendance,
+            'sessions_completed': branch_sessions_completed,
+            'materials_count': branch_material_uploads + branch_material_assignments,
+            'tests_count': 0,
+            'quizzes_count': branch_quizzes_created,
+            'login_count': UserActivity.objects.filter(user_type='employee', employee__branch__in=values).count(),
+            'activity_score': min(round(sum(branch_score_parts), 1), 100),
+        })
+
+    if not branch and not staff_id:
+        return Response({
+            'view_mode': 'branches',
+            'branches': branches,
+            'branch_cards': branch_cards,
+            'totals': {
+                'branches': len(branches),
+                'staff': Employee.objects.count(),
+                'students': Students.objects.count(),
+                'batches': Batches.objects.count(),
+            },
+        })
+
+    if branch and not staff_id:
+        staff_qs = Employee.objects.filter(branch__in=_tracking_branch_values(branch)).order_by('first_name', 'last_name')
+        staff_summaries = [_tracking_staff_card_summary(staff) for staff in staff_qs]
+        return Response({
+            'view_mode': 'branch_staff',
+            'branch': canonical_branch(branch),
+            'branches': branches,
+            'branch_cards': branch_cards,
+            'staff': staff_summaries,
+            'totals': {
+                'staff': staff_qs.count(),
+                'students': sum(item['student_count'] for item in staff_summaries),
+                'batches': sum(item['batch_count'] for item in staff_summaries),
+                'completed_students': sum(item['completed_students_count'] for item in staff_summaries),
+            },
+        })
+
+    if staff_id:
+        try:
+            staff = Employee.objects.get(id=staff_id)
+        except Employee.DoesNotExist:
+            return Response({'error': 'Staff not found'}, status=404)
+
+        batches = Batches.objects.filter(faculty=staff).select_related('course_name').order_by('-created_at')
+        students = Students.objects.filter(
+            Q(assigned_staff=staff) | Q(assigned_batch__faculty=staff)
+        ).select_related('assigned_batch').distinct().order_by('first_name', 'last_name')
+        summary = _tracking_staff_summary(staff)
+        new_since = timezone.now() - timedelta(days=7)
+
+        attendance_qs = StudentAttendance.objects.filter(staff=staff).select_related('student', 'batch').order_by('-date', '-created_at')
+        attendance_total = attendance_qs.count()
+        attendance_present = attendance_qs.filter(status='Present').count()
+        session_completions = DailySessionCompletion.objects.filter(
+            faculty=staff,
+            session__batch__in=batches,
+        ).select_related('session', 'session__batch').order_by('-completion_date')[:20]
+        login_records = UserActivity.objects.filter(employee=staff, user_type='employee').order_by('-login_time')[:20]
+        materials = StudyMaterial.objects.filter(uploaded_by=staff).select_related('batch').order_by('-uploaded_at')[:15]
+        tests = QuizTest.objects.filter(created_by=staff).order_by('-created_at')[:15]
+        quizzes = Quiz.objects.filter(created_by=staff).select_related('batch').order_by('-created_at')[:15]
+        weekly_login_records = UserActivity.objects.filter(
+            employee=staff,
+            user_type='employee',
+            login_time__gte=timezone.now() - timedelta(days=7),
+        ).order_by('-login_time')
+
+        student_rows = []
+        for student in students[:80]:
+            student_att = StudentAttendance.objects.filter(student=student, batch=student.assigned_batch)
+            student_present = student_att.filter(status='Present').count()
+            progress_qs = Student_Session_Progress.objects.filter(student=student, session__batch=student.assigned_batch)
+            total_progress = progress_qs.count()
+            done_progress = progress_qs.filter(Q(completed=True) | Q(student_status='completed')).count()
+            if done_progress == 0:
+                done_progress = progress_qs.filter(staff_completed=True).count()
+            student_rows.append({
+                'id': student.id,
+                'student_id': student.student_id,
+                'name': f"{student.first_name} {student.last_name or ''}".strip(),
+                'email': student.email,
+                'mobile_no': student.mobile_no,
+                'batch': student.assigned_batch.batch_number if student.assigned_batch else '',
+                'attendance_total': student_att.count(),
+                'attendance_present': student_present,
+                'attendance_percentage': round((student_present / student_att.count() * 100) if student_att.count() else 0, 1),
+                'sessions_completed': done_progress,
+                'total_sessions': total_progress,
+                'session_percentage': round((done_progress / total_progress * 100) if total_progress else 0, 1),
+                'is_new': student.created_at >= new_since,
+                'created_at': student.created_at,
+            })
+
+        batch_details = []
+        for batch in batches:
+            batch_students = Students.objects.filter(
+                Q(assigned_staff=staff) | Q(assigned_batch=batch),
+                assigned_batch=batch,
+            ).distinct().order_by('first_name', 'last_name')
+            completion = _tracking_batch_completion(batch, staff, batch_students)
+            total_sessions = completion['total_sessions']
+            completed_sessions = completion['completed_sessions']
+            batch_attendance = StudentAttendance.objects.filter(batch=batch, staff=staff)
+            batch_attendance_total = batch_attendance.count()
+            batch_attendance_present = batch_attendance.filter(status='Present').count()
+            batch_material_uploads = StudyMaterial.objects.filter(uploaded_by=staff, batch=batch)
+            batch_materials = StudyMaterialAssignment.objects.filter(assigned_by=staff, batch=batch)
+            batch_material_ids = set(batch_material_uploads.values_list('id', flat=True))
+            batch_material_ids.update(
+                StudyMaterialAssignment.objects.filter(
+                    material__uploaded_by=staff,
+                    batch=batch,
+                ).values_list('material_id', flat=True)
+            )
+            batch_uploaded_materials = StudyMaterial.objects.filter(id__in=batch_material_ids)
+            batch_tests = AssignedTest.objects.filter(batch=batch, test__created_by=staff)
+            batch_quizzes = Quiz.objects.filter(batch=batch, created_by=staff)
+
+            batch_student_rows = []
+            for student in batch_students:
+                student_att = StudentAttendance.objects.filter(student=student, batch=batch)
+                student_att_total = student_att.count()
+                student_att_present = student_att.filter(status='Present').count()
+                student_progress = Student_Session_Progress.objects.filter(student=student, session__batch=batch)
+                student_sessions_total = student_progress.count() or total_sessions
+                student_sessions_done = student_progress.filter(Q(completed=True) | Q(student_status='completed')).count()
+                if student_sessions_done == 0:
+                    student_sessions_done = student_progress.filter(staff_completed=True).count()
+                batch_student_rows.append({
+                    'id': student.id,
+                    'student_id': student.student_id,
+                    'name': f"{student.first_name} {student.last_name or ''}".strip(),
+                    'mobile_no': student.mobile_no,
+                    'email': student.email,
+                    'created_at': student.created_at,
+                    'is_new': student.created_at >= new_since,
+                    'attendance_total': student_att_total,
+                    'attendance_present': student_att_present,
+                    'attendance_percentage': round((student_att_present / student_att_total * 100) if student_att_total else 0, 1),
+                    'sessions_completed': student_sessions_done,
+                    'total_sessions': student_sessions_total,
+                    'session_percentage': round((student_sessions_done / student_sessions_total * 100) if student_sessions_total else 0, 1),
+                })
+
+            batch_details.append({
+                'id': batch.id,
+                'batch_number': batch.batch_number,
+                'course': batch.course_name.course_name if batch.course_name else '',
+                'course_type': batch.course_type,
+                'timing': batch.batch_timing,
+                'branch': batch.branch,
+                'start_date': batch.start_date,
+                'end_date': batch.end_date,
+                'created_at': batch.created_at,
+                'is_new': batch.created_at >= new_since,
+                'student_count': batch_students.count(),
+                'new_student_count': batch_students.filter(created_at__gte=new_since).count(),
+                'total_sessions': total_sessions,
+                'sessions_completed': completed_sessions,
+                'session_percentage': completion['percentage'],
+                'attendance_total': batch_attendance_total,
+                'attendance_present': batch_attendance_present,
+                'attendance_percentage': round((batch_attendance_present / batch_attendance_total * 100) if batch_attendance_total else 0, 1),
+                'materials_uploaded': batch_uploaded_materials.count(),
+                'materials_assigned': batch_materials.count(),
+                'tests_uploaded': batch_tests.values('test_id').distinct().count(),
+                'tests_assigned': batch_tests.count(),
+                'quizzes_uploaded': batch_quizzes.count(),
+                'content_upload_total': batch_uploaded_materials.count() + batch_quizzes.count(),
+                'recent_uploads': (
+                    [{
+                        'kind': 'Material',
+                        'title': item.title,
+                        'date': item.uploaded_at,
+                    } for item in batch_uploaded_materials.order_by('-uploaded_at')[:5]] +
+                    [{
+                        'kind': 'Test',
+                        'title': item.test.title if item.test else '',
+                        'date': item.assigned_date,
+                    } for item in batch_tests.select_related('test').order_by('-assigned_date')[:5]] +
+                    [{
+                        'kind': 'Quiz',
+                        'title': item.title,
+                        'date': item.created_at,
+                    } for item in batch_quizzes.order_by('-created_at')[:5]]
+                )[:8],
+                'students': batch_student_rows,
+            })
+
+        return Response({
+            'view_mode': 'staff_detail',
+            'branch': canonical_branch(staff.branch),
+            'branches': branches,
+            'branch_cards': branch_cards,
+            'staff': summary,
+            'charts': {
+                'batch_completion': summary['performance_graph']['batch_completion'],
+                'quiz_upload': summary['performance_graph']['quiz_upload'],
+                'material_upload': summary['performance_graph']['material_upload'],
+                'login_usage': summary['performance_graph']['login_usage'],
+                'activity_score': summary['activity_score'],
+                'content_total': summary['materials_uploaded'] + summary['quizzes_created'],
+            },
+            'highlights': {
+                'new_batches': summary['new_batches_count'],
+                'new_students': summary['new_students_count'],
+                'new_since': new_since,
+            },
+            'batches': [{
+                'id': batch.id,
+                'batch_number': batch.batch_number,
+                'course': batch.course_name.course_name if batch.course_name else '',
+                'course_type': batch.course_type,
+                'timing': batch.batch_timing,
+                'start_date': batch.start_date,
+                'end_date': batch.end_date,
+                'student_count': Students.objects.filter(assigned_batch=batch).count(),
+                'session_count': CourseSession.objects.filter(batch=batch).count(),
+                'is_new': batch.created_at >= new_since,
+            } for batch in batches],
+            'batch_details': batch_details,
+            'students': student_rows,
+            'recent_attendance': [{
+                'date': row.date,
+                'student': f"{row.student.first_name} {row.student.last_name or ''}".strip() if row.student else '',
+                'student_id': row.student.student_id if row.student else '',
+                'batch': row.batch.batch_number if row.batch else '',
+                'status': row.status,
+                'remarks': row.remarks or '',
+            } for row in attendance_qs[:30]],
+            'session_completions': [{
+                'date': item.completion_date,
+                'session': item.session.title if item.session else '',
+                'session_number': item.session.session_number if item.session else '',
+                'batch': item.session.batch.batch_number if item.session and item.session.batch else '',
+                'completed': item.completed,
+                'topics_covered': item.topics_covered or '',
+            } for item in session_completions],
+            'materials': [{
+                'title': item.title,
+                'batch': item.batch.batch_number if item.batch else 'Library',
+                'uploaded_at': item.uploaded_at,
+                'is_library': item.is_library,
+            } for item in materials],
+            'tests': [{
+                'title': item.title,
+                'created_at': item.created_at,
+                'assigned_count': AssignedTest.objects.filter(test=item).count(),
+            } for item in tests],
+            'quizzes': [{
+                'title': item.title,
+                'batch': item.batch.batch_number if item.batch else '',
+                'created_at': item.created_at,
+                'published': item.is_published,
+                'attempts': item.attempts.filter(is_completed=True).count(),
+            } for item in quizzes],
+            'login_records': [{
+                'login_time': item.login_time,
+                'logout_time': item.logout_time,
+                'last_seen': item.last_seen,
+            } for item in login_records],
+            'weekly_login_records': [{
+                'login_time': item.login_time,
+                'logout_time': item.logout_time,
+                'last_seen': item.last_seen,
+            } for item in weekly_login_records],
+        })
+
+    return Response({'error': 'Invalid tracking request'}, status=400)
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def admin_employee_tracking_pdf(request):
+    if not is_admin_user(request.user):
+        return Response({'error': 'Admin access required.'}, status=403)
+
+    staff_id = request.query_params.get('staff_id')
+    if not staff_id:
+        return Response({'error': 'staff_id is required'}, status=400)
+
+    try:
+        staff = Employee.objects.get(id=staff_id)
+    except Employee.DoesNotExist:
+        return Response({'error': 'Staff not found'}, status=404)
+
+    from reportlab.lib import colors
+    from reportlab.lib.enums import TA_CENTER
+    from reportlab.lib.pagesizes import A4, landscape
+    from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
+    from reportlab.lib.units import mm
+    from reportlab.graphics.shapes import Circle, Drawing, Rect, String, Wedge
+    from reportlab.platypus import Image, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+
+    def pdf_text(value):
+        if value is None or value == '':
+            return '-'
+        if hasattr(value, 'isoformat'):
+            try:
+                value = timezone.localtime(value)
+            except Exception:
+                pass
+            return value.strftime('%d %b %Y, %I:%M %p')
+        return str(value)
+
+    def display_branch(value):
+        labels = {
+            '100ft': '100ft',
+            'hopes': 'Hopes',
+            'kuniyamuthur': 'Kuniyamuthur',
+            'kunniyamuthur': 'Kuniyamuthur',
+        }
+        return labels.get(value, value or '-')
+
+    summary = _tracking_staff_summary(staff)
+    batches = Batches.objects.filter(faculty=staff).select_related('course_name').order_by('batch_number')
+    attendance_qs = StudentAttendance.objects.filter(staff=staff)
+    attendance_total = attendance_qs.count()
+    attendance_present = attendance_qs.filter(status__iexact='Present').count()
+    attendance_absent = attendance_qs.filter(status__iexact='Absent').count()
+
+    buffer = io.BytesIO()
+    doc = SimpleDocTemplate(
+        buffer,
+        pagesize=landscape(A4),
+        leftMargin=10 * mm,
+        rightMargin=10 * mm,
+        topMargin=10 * mm,
+        bottomMargin=10 * mm,
+    )
+
+    styles = getSampleStyleSheet()
+    title_style = ParagraphStyle('StaffReportTitle', parent=styles['Title'], fontName='Helvetica-Bold', fontSize=18, alignment=TA_CENTER, textColor=colors.HexColor('#0f172a'), spaceAfter=4)
+    subtitle_style = ParagraphStyle('StaffReportSubtitle', parent=styles['Normal'], fontSize=9, alignment=TA_CENTER, textColor=colors.HexColor('#64748b'), spaceAfter=8)
+    section_style = ParagraphStyle('StaffReportSection', parent=styles['Heading2'], fontName='Helvetica-Bold', fontSize=11, textColor=colors.HexColor('#0f172a'), spaceBefore=10, spaceAfter=6)
+    cell_style = ParagraphStyle('StaffReportCell', parent=styles['Normal'], fontSize=7.5, leading=9.5, textColor=colors.HexColor('#0f172a'))
+    header_style = ParagraphStyle('StaffReportHeader', parent=cell_style, fontName='Helvetica-Bold', textColor=colors.white)
+
+    def make_table(columns, rows, widths=None):
+        data = [[Paragraph(escape(label), header_style) for label, _ in columns]]
+        for row in rows:
+            data.append([Paragraph(escape(pdf_text(row.get(key))), cell_style) for _, key in columns])
+        if len(data) == 1:
+            data.append([Paragraph('No records found', cell_style)] + [''] * (len(columns) - 1))
+        table = Table(data, colWidths=widths, repeatRows=1)
+        table.setStyle(TableStyle([
+            ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#1572e8')),
+            ('GRID', (0, 0), (-1, -1), 0.35, colors.HexColor('#d9e2ec')),
+            ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+            ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, colors.HexColor('#f8fafc')]),
+            ('LEFTPADDING', (0, 0), (-1, -1), 4),
+            ('RIGHTPADDING', (0, 0), (-1, -1), 4),
+            ('TOPPADDING', (0, 0), (-1, -1), 4),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
+        ]))
+        return table
+
+    def progress_bar(value, color_hex):
+        pct = max(0, min(100, float(value or 0)))
+        width = 58 * mm
+        height = 8 * mm
+        drawing = Drawing(width, height)
+        drawing.add(Rect(0, 2 * mm, width, 4 * mm, fillColor=colors.HexColor('#e2e8f0'), strokeColor=None, rx=2 * mm, ry=2 * mm))
+        drawing.add(Rect(0, 2 * mm, width * pct / 100, 4 * mm, fillColor=colors.HexColor(color_hex), strokeColor=None, rx=2 * mm, ry=2 * mm))
+        drawing.add(String(width + 4, 2 * mm, f'{pct:g}%', fontName='Helvetica-Bold', fontSize=8, fillColor=colors.HexColor('#0f172a')))
+        return drawing
+
+    def donut_chart(value, color_hex, label='', size=30 * mm):
+        pct = max(0, min(100, float(value or 0)))
+        drawing = Drawing(size, size + 9 * mm)
+        center = size / 2
+        radius = size * 0.42
+        inner_radius = size * 0.27
+        drawing.add(Circle(center, center + 6 * mm, radius, fillColor=colors.HexColor('#e2e8f0'), strokeColor=None))
+        if pct > 0:
+            arc_pct = min(pct, 99.9)
+            drawing.add(Wedge(center, center + 6 * mm, radius, 90, 90 - (arc_pct * 3.6), fillColor=colors.HexColor(color_hex), strokeColor=None))
+        drawing.add(Circle(center, center + 6 * mm, inner_radius, fillColor=colors.white, strokeColor=None))
+        drawing.add(String(center, center + 4.5 * mm, f'{pct:g}%', textAnchor='middle', fontName='Helvetica-Bold', fontSize=10, fillColor=colors.HexColor(color_hex)))
+        if label:
+            drawing.add(String(center, 1.5 * mm, label, textAnchor='middle', fontName='Helvetica-Bold', fontSize=6.7, fillColor=colors.HexColor('#475569')))
+        return drawing
+
+    def metric_icon(color_hex):
+        drawing = Drawing(18 * mm, 18 * mm)
+        drawing.add(Rect(3 * mm, 3 * mm, 12 * mm, 12 * mm, fillColor=colors.HexColor(color_hex), strokeColor=None, rx=3 * mm, ry=3 * mm))
+        drawing.add(Circle(9 * mm, 9 * mm, 2.4 * mm, fillColor=colors.white, strokeColor=None))
+        return drawing
+
+    def metric_card(label, value, subtext, color_hex):
+        return Table(
+            [[
+                [
+                    Paragraph(escape(str(value)), ParagraphStyle('MetricValue', parent=cell_style, fontName='Helvetica-Bold', fontSize=16, leading=18, textColor=colors.HexColor('#0f172a'))),
+                    Paragraph(escape(label), ParagraphStyle('MetricLabel', parent=cell_style, fontName='Helvetica-Bold', fontSize=7.5, textColor=colors.HexColor('#64748b'))),
+                    Paragraph(escape(subtext), ParagraphStyle('MetricSub', parent=cell_style, fontSize=6.5, textColor=colors.HexColor('#94a3b8'))),
+                ],
+                metric_icon(color_hex),
+            ]],
+            colWidths=[36 * mm, 31 * mm],
+            rowHeights=[24 * mm],
+            style=TableStyle([
+                ('BACKGROUND', (0, 0), (-1, -1), colors.HexColor('#f8fafc')),
+                ('BOX', (0, 0), (-1, -1), 0.45, colors.HexColor('#d9e2ec')),
+                ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+                ('LEFTPADDING', (0, 0), (-1, -1), 7),
+                ('RIGHTPADDING', (0, 0), (-1, -1), 7),
+                ('TOPPADDING', (0, 0), (-1, -1), 6),
+                ('BOTTOMPADDING', (0, 0), (-1, -1), 6),
+            ]),
+        )
+
+    def make_staff_hero():
+        staff_title = f"{staff_name}"
+        staff_meta = f"{staff.designation or 'Staff'} | {display_branch(staff.branch)} | Last login {pdf_text(summary.get('last_login'))}"
+        badges = f"{summary['student_count']} students handled    {summary['batch_count']} batches    {summary['new_students_count']} new students"
+        return Table(
+            [[
+                [
+                    Paragraph(escape(staff_title), ParagraphStyle('HeroName', parent=cell_style, fontName='Helvetica-Bold', fontSize=17, leading=19, textColor=colors.white)),
+                    Paragraph(escape(staff_meta), ParagraphStyle('HeroMeta', parent=cell_style, fontName='Helvetica-Bold', fontSize=7.5, textColor=colors.HexColor('#dbeafe'))),
+                    Paragraph(escape(badges), ParagraphStyle('HeroBadges', parent=cell_style, fontName='Helvetica-Bold', fontSize=7, textColor=colors.white)),
+                ],
+                donut_chart(summary['performance_graph']['login_usage'], '#f59e0b', 'Login usage', 36 * mm),
+                progress_bar(summary['performance_graph']['login_usage'], '#f59e0b'),
+            ]],
+            colWidths=[150 * mm, 42 * mm, 76 * mm],
+            rowHeights=[33 * mm],
+            style=TableStyle([
+                ('BACKGROUND', (0, 0), (-1, -1), colors.HexColor('#123047')),
+                ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+                ('BOX', (0, 0), (-1, -1), 0.45, colors.HexColor('#123047')),
+                ('LEFTPADDING', (0, 0), (-1, -1), 8),
+                ('RIGHTPADDING', (0, 0), (-1, -1), 8),
+                ('TOPPADDING', (0, 0), (-1, -1), 6),
+                ('BOTTOMPADDING', (0, 0), (-1, -1), 6),
+            ]),
+        )
+
+    def make_performance_table(rows):
+        data = [[
+            Paragraph('Metric', header_style),
+            Paragraph('Count', header_style),
+            Paragraph('Graph Percentage', header_style),
+        ]]
+        for row in rows:
+            data.append([
+                Paragraph(escape(pdf_text(row['metric'])), cell_style),
+                Paragraph(escape(pdf_text(row['count'])), cell_style),
+                progress_bar(row['percentage'], row['color']),
+            ])
+        table = Table(data, colWidths=[52 * mm, 44 * mm, 82 * mm], repeatRows=1)
+        table.setStyle(TableStyle([
+            ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#1572e8')),
+            ('GRID', (0, 0), (-1, -1), 0.35, colors.HexColor('#d9e2ec')),
+            ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+            ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, colors.HexColor('#f8fafc')]),
+            ('LEFTPADDING', (0, 0), (-1, -1), 5),
+            ('RIGHTPADDING', (0, 0), (-1, -1), 5),
+            ('TOPPADDING', (0, 0), (-1, -1), 5),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 5),
+        ]))
+        return table
+
+    def make_batch_header(batch_row):
+        return Table(
+            [[
+                [
+                    Paragraph(escape(batch_row['batch']), ParagraphStyle('BatchTitle', parent=cell_style, fontName='Helvetica-Bold', fontSize=9.5, textColor=colors.HexColor('#0f172a'))),
+                    Paragraph(escape(batch_row['meta']), ParagraphStyle('BatchMeta', parent=cell_style, fontSize=7, textColor=colors.HexColor('#64748b'))),
+                ],
+                Paragraph(escape(f"{batch_row['students']} students    {batch_row['new_students']} new    {batch_row['uploads']} uploads    {batch_row['sessions']} sessions done"), ParagraphStyle('BatchBadges', parent=cell_style, fontName='Helvetica-Bold', fontSize=7, alignment=TA_CENTER, textColor=colors.HexColor('#0f766e'))),
+                donut_chart(batch_row['session_percentage'], '#059669', 'Sessions', 30 * mm),
+            ]],
+            colWidths=[100 * mm, 118 * mm, 42 * mm],
+            style=TableStyle([
+                ('BACKGROUND', (0, 0), (-1, -1), colors.HexColor('#ecfdf5')),
+                ('BOX', (0, 0), (-1, -1), 0.45, colors.HexColor('#bbf7d0')),
+                ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+                ('LEFTPADDING', (0, 0), (-1, -1), 6),
+                ('RIGHTPADDING', (0, 0), (-1, -1), 6),
+                ('TOPPADDING', (0, 0), (-1, -1), 5),
+                ('BOTTOMPADDING', (0, 0), (-1, -1), 5),
+            ]),
+        )
+
+    generated_at = timezone.localtime(timezone.now()).strftime('%d %b %Y, %I:%M %p')
+    staff_name = f"{staff.first_name or ''} {staff.last_name or ''}".strip() or staff.username or 'Staff'
+    logo_path = Path(settings.BASE_DIR) / 'connect' / 'assets' / 'IIE.png'
+    header_left = Image(str(logo_path), width=28 * mm, height=18 * mm) if logo_path.exists() else Paragraph('<b>IIE</b>', cell_style)
+    header = Table(
+        [[
+            header_left,
+            [
+                Paragraph('Staff Activity Report', title_style),
+                Paragraph(escape(f"{staff_name} | {staff.designation or 'Staff'} | {display_branch(staff.branch)} | Generated: {generated_at}"), subtitle_style),
+            ],
+            '',
+        ]],
+        colWidths=[35 * mm, None, 35 * mm],
+    )
+    header.setStyle(TableStyle([
+        ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+        ('LEFTPADDING', (0, 0), (-1, -1), 0),
+        ('RIGHTPADDING', (0, 0), (-1, -1), 0),
+        ('TOPPADDING', (0, 0), (-1, -1), 0),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 6),
+    ]))
+
+    batch_rows = []
+    for batch in batches:
+        completion = _tracking_batch_completion(batch, staff)
+        batch_students = Students.objects.filter(assigned_batch=batch)
+        total_sessions = completion['total_sessions']
+        direct_material_ids = StudyMaterial.objects.filter(uploaded_by=staff, batch=batch).values_list('id', flat=True)
+        assigned_material_ids = StudyMaterialAssignment.objects.filter(
+            Q(assigned_by=staff) | Q(material__uploaded_by=staff),
+            batch=batch,
+        ).values_list('material_id', flat=True)
+        material_count = StudyMaterial.objects.filter(id__in=set(list(direct_material_ids) + list(assigned_material_ids))).count()
+        batch_attendance_total = StudentAttendance.objects.filter(staff=staff, batch=batch).count()
+        batch_attendance_present = StudentAttendance.objects.filter(staff=staff, batch=batch, status__iexact='Present').count()
+        quiz_count = Quiz.objects.filter(created_by=staff, batch=batch).count()
+        student_rows = []
+        for student in batch_students.order_by('first_name', 'last_name'):
+            student_att_qs = StudentAttendance.objects.filter(staff=staff, batch=batch, student=student)
+            student_att_total = student_att_qs.count()
+            student_att_present = student_att_qs.filter(status__iexact='Present').count()
+            student_sessions_done = Student_Session_Progress.objects.filter(
+                student=student,
+                session__batch=batch,
+            ).filter(
+                Q(completed=True) | Q(student_status='completed')
+            ).values('session_id').distinct().count()
+            student_rows.append({
+                'student': f"{student.first_name} {student.last_name or ''}".strip(),
+                'student_id': student.student_id,
+                'attendance': f"{student_att_present}/{student_att_total} ({round((student_att_present / student_att_total * 100) if student_att_total else 0, 1)}%)",
+                'sessions': f"{student_sessions_done}/{total_sessions} ({round((student_sessions_done / total_sessions * 100) if total_sessions else 0, 1)}%)",
+                'created': student.created_at.strftime('%d/%m/%Y') if student.created_at else '-',
+            })
+        batch_rows.append({
+            'batch': batch.batch_number,
+            'course': batch.course_name.course_name if batch.course_name else '-',
+            'meta': f"{batch.course_name.course_name if batch.course_name else '-'} | {batch.course_type or '-'} | {batch.batch_timing or '-'}",
+            'students': batch_students.count(),
+            'new_students': batch_students.filter(created_at__gte=timezone.now() - timedelta(days=7)).count(),
+            'sessions': f"{completion['completed_sessions']}/{completion['total_sessions']}",
+            'session_percentage': completion['percentage'],
+            'attendance': f"{batch_attendance_present}/{batch_attendance_total}",
+            'attendance_percentage': round((batch_attendance_present / batch_attendance_total * 100) if batch_attendance_total else 0, 1),
+            'materials': material_count,
+            'quizzes': quiz_count,
+            'uploads': material_count + quiz_count,
+            'student_rows': student_rows,
+        })
+
+    weekly_login_records = UserActivity.objects.filter(
+        employee=staff,
+        user_type='employee',
+        login_time__gte=timezone.now() - timedelta(days=7),
+    ).order_by('-login_time')
+
+    def format_duration(start, end):
+        if not start:
+            return '-'
+        session_end = end or timezone.now()
+        delta = session_end - start
+        total_minutes = max(0, int(delta.total_seconds() // 60))
+        hours, minutes = divmod(total_minutes, 60)
+        if hours:
+            return f"{hours}h {minutes}m"
+        return f"{minutes}m"
+
+    login_history_rows = [{
+        'login_time': item.login_time,
+        'logout_time': item.logout_time or 'Still active',
+        'last_seen': item.last_seen,
+        'duration': format_duration(item.login_time, item.logout_time or item.last_seen),
+    } for item in weekly_login_records]
+
+    performance_rows = [
+        {'metric': 'Batch Completion', 'count': f"{summary['completed_batch_count']}/{summary['batch_count']} batches", 'percentage': summary['performance_graph']['batch_completion'], 'color': '#059669'},
+        {'metric': 'Quiz Upload', 'count': summary['quizzes_created'], 'percentage': summary['performance_graph']['quiz_upload'], 'color': '#7c3aed'},
+        {'metric': 'Material Upload', 'count': summary['materials_uploaded'], 'percentage': summary['performance_graph']['material_upload'], 'color': '#0891b2'},
+        {'metric': 'Login Usage', 'count': f"{summary['login_usage_count']}/{summary['login_usage_target']} logins", 'percentage': summary['performance_graph']['login_usage'], 'color': '#ca8a04'},
+    ]
+
+    story = [
+        header,
+        Spacer(1, 4),
+        make_staff_hero(),
+        Spacer(1, 6),
+        Table(
+            [[
+                metric_card('Students', summary['student_count'], 'students handled', '#2563eb'),
+                metric_card('Batches', summary['batch_count'], 'active batches', '#059669'),
+                metric_card('Materials', summary['materials_uploaded'], 'uploads count', '#0891b2'),
+                metric_card('Quizzes', summary['quizzes_created'], 'upload count', '#7c3aed'),
+            ]],
+            colWidths=[67 * mm, 67 * mm, 67 * mm, 67 * mm],
+            style=TableStyle([
+                ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+                ('LEFTPADDING', (0, 0), (-1, -1), 2),
+                ('RIGHTPADDING', (0, 0), (-1, -1), 2),
+            ]),
+        ),
+        Paragraph('Performance Graph', section_style),
+        Table(
+            [[
+                make_performance_table(performance_rows),
+                donut_chart(summary['activity_score'], '#0f766e', 'Overall Performance', 42 * mm),
+            ]],
+            colWidths=[190 * mm, 70 * mm],
+            style=TableStyle([
+                ('BOX', (0, 0), (-1, -1), 0.45, colors.HexColor('#d9e2ec')),
+                ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+                ('LEFTPADDING', (0, 0), (-1, -1), 8),
+                ('RIGHTPADDING', (0, 0), (-1, -1), 8),
+                ('TOPPADDING', (0, 0), (-1, -1), 8),
+                ('BOTTOMPADDING', (0, 0), (-1, -1), 8),
+            ]),
+        ),
+        Spacer(1, 5),
+        Paragraph('Batch-wise Session and Student Attendance Progress', section_style),
+    ]
+
+    for batch_row in batch_rows:
+        story.extend([
+            make_batch_header(batch_row),
+            Table(
+                [[
+                    metric_card('Materials Uploaded', batch_row['materials'], 'batch upload count', '#0891b2'),
+                    metric_card('Quizzes Uploaded', batch_row['quizzes'], 'batch upload count', '#7c3aed'),
+                ]],
+                colWidths=[130 * mm, 130 * mm],
+                style=TableStyle([
+                    ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+                    ('LEFTPADDING', (0, 0), (-1, -1), 2),
+                    ('RIGHTPADDING', (0, 0), (-1, -1), 2),
+                    ('TOPPADDING', (0, 0), (-1, -1), 5),
+                    ('BOTTOMPADDING', (0, 0), (-1, -1), 5),
+                ]),
+            ),
+            make_performance_table([
+                {'metric': 'Batch session progress', 'count': batch_row['sessions'], 'percentage': batch_row['session_percentage'], 'color': '#059669'},
+                {'metric': 'Batch attendance progress', 'count': batch_row['attendance'], 'percentage': batch_row['attendance_percentage'], 'color': '#2563eb'},
+            ]),
+            make_table(
+                [('Student', 'student'), ('Student ID', 'student_id'), ('Attendance Progress', 'attendance'), ('Session Progress', 'sessions'), ('Created', 'created')],
+                batch_row['student_rows'],
+                widths=[62 * mm, 40 * mm, 55 * mm, 55 * mm, 35 * mm],
+            ),
+            Spacer(1, 6),
+        ])
+
+    story.extend([
+        Paragraph('Login History (Last 7 Days)', section_style),
+        make_table(
+            [('Login Time', 'login_time'), ('Logout Time', 'logout_time'), ('Last Seen', 'last_seen'), ('Session Duration', 'duration')],
+            login_history_rows,
+            widths=[70 * mm, 70 * mm, 70 * mm, 45 * mm],
+        ),
+    ])
+
+    doc.build(story)
+    buffer.seek(0)
+    filename = f"staff_activity_{staff_name.replace(' ', '_') or staff.id}.pdf"
+    response = HttpResponse(buffer.getvalue(), content_type='application/pdf')
+    response['Content-Disposition'] = f'inline; filename="{filename}"'
+    return response
 
 # -- ADMIN: STUDY MATERIALS OVERVIEW ------------------------------------------
 
@@ -5236,7 +6914,9 @@ def student_quizzes(request):
         data = []
         for quiz in quizzes:
             attempts = QuizAttempt.objects.filter(student=student, quiz=quiz)
+            completed_attempts = attempts.filter(is_completed=True)
             best_score = attempts.filter(is_completed=True).order_by('-percentage').first()
+            is_completed = completed_attempts.exists()
             
             questions = quiz.questions.all().order_by('question_number')
             questions_data = []
@@ -5268,6 +6948,9 @@ def student_quizzes(request):
                 'max_attempts': quiz.max_attempts,
                 'user_attempts': attempts.count(),
                 'best_score': best_score.percentage if best_score else None,
+                'status': 'completed' if is_completed else 'available',
+                'last_attempt_id': best_score.id if best_score else None,
+                'completed_at': best_score.submitted_at if best_score else None,
                 'questions': questions_data
             })
         
@@ -5288,8 +6971,12 @@ def student_take_quiz(request, quiz_id):
         if not assigned_to_batch:
             return Response({'error': 'This quiz is not assigned to your batch'}, status=400)
         
-        # Check attempt limit
+        # Student quizzes are one-time only in the mobile app.
         existing_attempts = QuizAttempt.objects.filter(student=student, quiz=quiz).count()
+        if existing_attempts > 0:
+            return Response({'error': 'You have already attended this quiz. Only one attempt allowed.'}, status=400)
+
+        # Check attempt limit
         if existing_attempts >= quiz.max_attempts and quiz.max_attempts > 0:
             return Response({'error': f'Maximum attempts ({quiz.max_attempts}) reached'}, status=400)
         
@@ -5408,13 +7095,32 @@ def student_take_quiz(request, quiz_id):
 def quiz_result_details(request, attempt_id):
     """Get detailed quiz result with answers"""
     try:
-        attempt = QuizAttempt.objects.get(id=attempt_id)
+        attempt = QuizAttempt.objects.select_related(
+            'quiz',
+            'quiz__batch',
+            'quiz__created_by',
+            'student',
+            'student__user',
+            'student__assigned_staff',
+        ).get(id=attempt_id)
         
         # Check permission
-        if attempt.student.user != request.user and not request.user.is_staff:
+        has_access = attempt.student.user == request.user or request.user.is_superuser or request.user.is_staff
+        if not has_access:
+            try:
+                employee = Employee.objects.get(user=request.user)
+                has_access = (
+                    attempt.quiz.created_by_id == employee.id or
+                    (attempt.quiz.batch and attempt.quiz.batch.faculty_id == employee.id) or
+                    attempt.student.assigned_staff_id == employee.id
+                )
+            except Employee.DoesNotExist:
+                has_access = False
+
+        if not has_access:
             return Response({'error': 'Access denied'}, status=403)
         
-        answers = QuizAnswer.objects.filter(attempt=attempt).select_related('question')
+        answers = QuizAnswer.objects.filter(attempt=attempt).select_related('question').order_by('question__question_number')
         
         questions_details = []
         for answer in answers:
@@ -5443,6 +7149,8 @@ def quiz_result_details(request, attempt_id):
                 correct_option_text = q.option_d
             
             questions_details.append({
+                'question_id': q.id,
+                'question_number': q.question_number,
                 'question_text': q.question_text,
                 'selected_answer': answer.selected_answer or '-',
                 'selected_option_text': selected_option_text or 'Not answered',
@@ -5450,12 +7158,18 @@ def quiz_result_details(request, attempt_id):
                 'correct_option_text': correct_option_text or 'N/A',
                 'is_correct': answer.is_correct,
                 'marks': q.marks,
+                'marks_obtained': answer.marks_obtained,
+                'explanation': q.explanation or '',
             })
         
         wrong_count = len([q for q in questions_details if not q['is_correct']])
         
         return Response({
+            'attempt_id': attempt.id,
             'quiz_title': attempt.quiz.title,
+            'student_name': f"{attempt.student.first_name} {attempt.student.last_name or ''}".strip(),
+            'student_id': attempt.student.student_id,
+            'attempt_number': attempt.attempt_number,
             'score': attempt.score,
             'total_marks': attempt.quiz.total_marks,
             'percentage': attempt.percentage,
@@ -5463,6 +7177,7 @@ def quiz_result_details(request, attempt_id):
             'correct_count': sum(1 for a in answers if a.is_correct),
             'wrong_count': wrong_count,
             'total_questions': answers.count(),
+            'submitted_at': attempt.submitted_at,
             'questions': questions_details,
         })
     except QuizAttempt.DoesNotExist:
@@ -5934,7 +7649,7 @@ def download_completion_report(request, student_id):
         from reportlab.lib import colors
         from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
         from reportlab.lib.units import mm
-        from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, HRFlowable
+        from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, HRFlowable, Image as RLImage
         from reportlab.lib.enums import TA_CENTER
 
         s = CompletedStudent.objects.get(id=student_id)
@@ -6008,10 +7723,12 @@ def download_completion_report(request, student_id):
     story = []
 
     # -- Header banner --------------------------------------------------------
+    logo_path = Path(settings.BASE_DIR) / 'connect' / 'assets' / 'IIE.png'
+    logo = RLImage(str(logo_path), width=28 * mm, height=18 * mm) if logo_path.exists() else Paragraph('IIE CONNECT', title_style)
     ht = Table(
-        [[Paragraph('IIE CONNECT', title_style),
+        [[logo,
           Paragraph('Certificate of Course Completion', subtitle_style)]],
-        colWidths=[W * 0.42, W * 0.58]
+        colWidths=[W * 0.28, W * 0.72]
     )
     ht.setStyle(TableStyle([
         ('BACKGROUND',    (0,0), (-1,-1), NAVY),
@@ -6947,6 +8664,194 @@ def counselor_delete_announcement(request, pk):
         return Response({'error': 'Permission denied'}, status=403)
     except CounselorAnnouncement.DoesNotExist:
         return Response({'error': 'Not found'}, status=404)
+
+
+def _get_trainer_for_request(request):
+    emp = Employee.objects.filter(user=request.user).first()
+    if emp and (emp.designation or '').strip().lower() in ['trainer', 'mentor']:
+        return emp
+    return None
+
+
+class TrainerAnnouncementListView(generics.ListAPIView):
+    serializer_class = CounselorAnnouncementSerializer
+    permission_classes = [IsAuthenticated]
+
+    def get_queryset(self):
+        trainer = _get_trainer_for_request(self.request)
+        if not trainer:
+            return CounselorAnnouncement.objects.none()
+        return CounselorAnnouncement.objects.filter(created_by=self.request.user).order_by('-created_at')
+
+
+class TrainerAnnouncementCreateView(generics.CreateAPIView):
+    serializer_class = CounselorAnnouncementSerializer
+    permission_classes = [IsAuthenticated]
+
+    def get_serializer(self, *args, **kwargs):
+        if 'data' in kwargs:
+            data = kwargs['data'].copy()
+            data.pop('specific_student_ids', None)
+            kwargs['data'] = data
+        return super().get_serializer(*args, **kwargs)
+
+    def perform_create(self, serializer):
+        trainer = _get_trainer_for_request(self.request)
+        if not trainer:
+            raise PermissionDenied("Only trainers can use this endpoint.")
+
+        recipient_type = self.request.data.get('recipient_type')
+        batch_id = self.request.data.get('specific_batch')
+        if recipient_type not in ['specific_batch', 'specific_student']:
+            raise PermissionDenied("Trainer announcements must target a specific batch or student.")
+        if not batch_id:
+            raise PermissionDenied("Select a batch for trainer announcement.")
+
+        batch = Batches.objects.filter(id=batch_id, faculty=trainer).first()
+        if not batch:
+            raise PermissionDenied("You can announce only to your own batches.")
+
+        announcement = serializer.save(
+            created_by=self.request.user,
+            branch=trainer.branch,
+            specific_batch=batch,
+            is_important=recipient_type == 'important' or self.request.data.get('announcement_type') == 'important',
+        )
+        specific_student_ids = self.request.data.get('specific_student_ids', [])
+        if isinstance(specific_student_ids, str):
+            specific_student_ids = [sid for sid in specific_student_ids.split(',') if sid]
+
+        if recipient_type == 'specific_student':
+            students = Students.objects.filter(
+                id__in=specific_student_ids,
+                assigned_batch=batch,
+            ).filter(Q(assigned_staff=trainer) | Q(assigned_batch__faculty=trainer)).distinct()
+            if not students.exists():
+                raise PermissionDenied("Select at least one student from this batch.")
+            announcement.specific_students.set(students)
+        else:
+            announcement.specific_students.clear()
+
+        return announcement
+
+
+@api_view(['PATCH'])
+@permission_classes([IsAuthenticated])
+def trainer_update_announcement(request, pk):
+    trainer = _get_trainer_for_request(request)
+    if not trainer:
+        return Response({'error': 'Permission denied'}, status=403)
+
+    try:
+        ann = CounselorAnnouncement.objects.get(id=pk, created_by=request.user)
+    except CounselorAnnouncement.DoesNotExist:
+        return Response({'error': 'Not found'}, status=404)
+
+    recipient_type = request.data.get('recipient_type', ann.recipient_type)
+    batch_id = request.data.get('specific_batch') or ann.specific_batch_id
+    batch = Batches.objects.filter(id=batch_id, faculty=trainer).first()
+    if recipient_type not in ['specific_batch', 'specific_student'] or not batch:
+        return Response({'error': 'Select one of your batches.'}, status=400)
+
+    serializer_data = request.data.copy()
+    serializer_data.pop('specific_student_ids', None)
+    serializer = CounselorAnnouncementSerializer(ann, data=serializer_data, partial=True)
+    if not serializer.is_valid():
+        return Response(serializer.errors, status=400)
+    ann = serializer.save(
+        branch=trainer.branch,
+        specific_batch=batch,
+        is_important=request.data.get('announcement_type', ann.announcement_type) == 'important',
+    )
+
+    specific_student_ids = request.data.get('specific_student_ids', [])
+    if isinstance(specific_student_ids, str):
+        specific_student_ids = [sid for sid in specific_student_ids.split(',') if sid]
+
+    if recipient_type == 'specific_student':
+        students = Students.objects.filter(
+            id__in=specific_student_ids,
+            assigned_batch=batch,
+        ).filter(Q(assigned_staff=trainer) | Q(assigned_batch__faculty=trainer)).distinct()
+        if not students.exists():
+            return Response({'error': 'Select at least one student from this batch.'}, status=400)
+        ann.specific_students.set(students)
+    else:
+        ann.specific_students.clear()
+
+    return Response(CounselorAnnouncementSerializer(ann).data)
+
+
+@api_view(['PATCH'])
+@permission_classes([IsAuthenticated])
+def trainer_toggle_announcement(request, pk):
+    trainer = _get_trainer_for_request(request)
+    if not trainer:
+        return Response({'error': 'Permission denied'}, status=403)
+    try:
+        ann = CounselorAnnouncement.objects.get(id=pk, created_by=request.user)
+        ann.is_published = not ann.is_published
+        ann.save()
+        return Response({'is_published': ann.is_published})
+    except CounselorAnnouncement.DoesNotExist:
+        return Response({'error': 'Not found'}, status=404)
+
+
+@api_view(['DELETE'])
+@permission_classes([IsAuthenticated])
+def trainer_delete_announcement(request, pk):
+    trainer = _get_trainer_for_request(request)
+    if not trainer:
+        return Response({'error': 'Permission denied'}, status=403)
+    try:
+        CounselorAnnouncement.objects.get(id=pk, created_by=request.user).delete()
+        return Response(status=204)
+    except CounselorAnnouncement.DoesNotExist:
+        return Response({'error': 'Not found'}, status=404)
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def trainer_announcement_batches(request):
+    trainer = _get_trainer_for_request(request)
+    if not trainer:
+        return Response({'error': 'Permission denied'}, status=403)
+
+    batches = Batches.objects.filter(faculty=trainer).select_related('course_name').order_by('batch_number')
+    return Response([
+        {
+            'id': batch.id,
+            'batch_number': batch.batch_number,
+            'batch_timing': batch.batch_timing,
+            'course_name': batch.course_name.course_name if batch.course_name else '',
+            'display_text': f"{batch.batch_number} - {batch.course_name.course_name if batch.course_name else 'Course'} - {batch.batch_timing}",
+        }
+        for batch in batches
+    ])
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def trainer_announcement_students(request):
+    trainer = _get_trainer_for_request(request)
+    if not trainer:
+        return Response({'error': 'Permission denied'}, status=403)
+
+    batch_id = request.query_params.get('batch')
+    students = Students.objects.filter(Q(assigned_staff=trainer) | Q(assigned_batch__faculty=trainer)).distinct()
+    if batch_id:
+        students = students.filter(assigned_batch_id=batch_id)
+
+    return Response([
+        {
+            'id': student.id,
+            'student_id': student.student_id,
+            'name': f"{student.first_name} {student.last_name or ''}".strip(),
+            'batch_id': student.assigned_batch_id,
+            'batch_number': student.assigned_batch.batch_number if student.assigned_batch else '',
+        }
+        for student in students.select_related('assigned_batch').order_by('first_name', 'student_id')
+    ])
 
 
 

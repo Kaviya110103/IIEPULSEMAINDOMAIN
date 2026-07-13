@@ -1,0 +1,31 @@
+﻿No.,Question,Option_1,Option_2,Option_3,Option_4,Explanation,Correct Answer
+1,Which data type is immutable?,list,tuple,dict,set,Tuples cannot be modified after creation.,tuple
+2,Which function returns the length of a string?,size(),len(),count(),length(),`len()` returns the number of characters in a string.,len()
+3,How do you handle exceptions in Python?,try-except,catch,handle,error,Python uses try-except for exception handling.,try-except
+4,Which method adds an element to a list?,add(),append(),insert(),extend(),`append()` adds a single element at the end of the list.,append()
+5,"What is the output of bool("""")?",TRUE,FALSE,None,Error,Empty strings are considered False in Python.,FALSE
+6,Which keyword is used to define a function?,func,def,function,lambda,`def` is used to define functions.,def
+7,Which method removes the last item from a list?,pop(),remove(),del(),clear(),`pop()` removes last element.,pop()
+8,Which operator is used for exponentiation?,**,^,%,//,** is exponentiation operator.,**
+9,Which data structure uses key-value pairs?,dict,list,set,None,Dictionaries store key-value pairs.,dict
+10,What is the output of type([])?,list,tuple,dict,set,type([]) returns <class 'list'>.,list
+11,Which library is used for data manipulation in Python?,NumPy,pandas,matplotlib,seaborn,`pandas` is mainly used for data manipulation.,pandas
+12,What is the main purpose of data visualization?,Data cleaning,Insight presentation,Feature selection,Data storage,Visualization helps communicate insights.,Insight presentation
+13,Which method is used to handle missing data in pandas?,fillna(),dropna(),replace(),Both 1 & 2,Both `fillna()` and `dropna()` handle missing values.,Both 1 & 2
+14,Which library is used for plotting?,NumPy,matplotlib,pandas,sklearn,`matplotlib` is a plotting library.,matplotlib
+15,Which of the following is unsupervised learning?,Linear Regression,K-Means,Logistic Regression,Decision Tree,K-Means clustering is unsupervised.,K-Means
+16,Which function returns statistical summary in pandas?,describe(),info(),mean(),mode(),`describe()` gives statistical summary.,describe()
+17,Which plot is suitable for showing distribution?,Histogram,Boxplot,Pie chart,Line plot,Histogram shows distribution of data.,Histogram
+18,Which method merges two DataFrames?,concat(),merge(),join(),append(),`merge()` combines DataFrames.,merge()
+19,Which function normalizes data?,normalize(),scale(),standardize(),normalize(),Normalization scales data to range 0-1.,normalize()
+20,Which method converts DataFrame to CSV?,to_csv(),to_excel(),write_csv(),save_csv(),`to_csv()` exports DataFrame to CSV file.,to_csv()
+21,Which algorithm is used for classification?,Linear Regression,Decision Tree,K-Means,PCA,Decision Tree can be used for classification.,Decision Tree
+22,Which metric is used for regression evaluation?,Accuracy,MSE,F1-score,Precision,MSE is used for regression evaluation.,MSE
+23,What is overfitting?,Model underperforming,Model fits training data too well,Model ignoring data,Model with low variance,Overfitting occurs when model memorizes training data.,Model fits training data too well
+24,Which technique reduces dimensionality?,PCA,Regression,Clustering,Classification,PCA reduces dimensionality.,PCA
+25,Which algorithm is unsupervised?,K-Means,Random Forest,Logistic Regression,SVM,K-Means is unsupervised.,K-Means
+26,Which algorithm is used for clustering?,DBSCAN,K-Means,Agglomerative,KNN,DBSCAN is clustering algorithm.,K-Means
+27,Which algorithm is used for regression?,Linear Regression,Decision Tree,Random Forest,SVM,Linear Regression predicts continuous values.,Linear Regression
+28,Which method splits dataset into training and testing?,train_test_split,split(),partition(),divide(),train_test_split divides dataset.,train_test_split
+29,Which technique prevents overfitting?,Regularization,Dropout,Data Augmentation,Early Stopping,Regularization prevents overfitting.,Regularization
+30,Which metric is used for classification evaluation?,Accuracy,Precision,Recall,MSE,Accuracy evaluates classification performance.,Accuracy

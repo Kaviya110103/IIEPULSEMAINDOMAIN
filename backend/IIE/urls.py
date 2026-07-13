@@ -92,6 +92,7 @@ urlpatterns = [
     # â”€â”€ MATERIALS â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     path('api/materials/', v.StudyMaterialListView.as_view()),
     path('api/materials/upload/', v.StudyMaterialCreateView.as_view()),
+    path('api/materials/<int:pk>/', v.update_material),
     path('api/materials/<int:pk>/download/', v.download_material),
     path('api/materials/<int:pk>/delete/', v.delete_material),
     path('api/material-library/', v.material_library_list),
@@ -132,7 +133,12 @@ urlpatterns = [
     path('api/admin/monitoring/employees/', v.admin_employee_monitoring),
     path('api/admin/monitoring/students/', v.admin_student_monitoring),
     path('api/staff/monitoring/students/', v.mentor_student_monitoring),
+    path('api/admin/monitoring/employees/report/', v.admin_employee_monitoring_pdf),
+    path('api/admin/monitoring/students/report/', v.admin_student_monitoring_pdf),
+    path('api/staff/monitoring/students/report/', v.mentor_student_monitoring_pdf),
     path('api/admin/branch-attendance/', v.admin_branch_attendance),
+    path('api/admin/employee-tracking/', v.admin_employee_tracking),
+    path('api/admin/employee-tracking/report/', v.admin_employee_tracking_pdf),
     path('api/admin/materials-overview/', v.admin_materials_overview),
     path('api/admin/support-overview/', v.admin_support_overview),
     path('api/admin/support/<int:pk>/update/', v.update_support_status),
@@ -162,6 +168,13 @@ urlpatterns = [
     path('api/counselor/announcements/<int:pk>/update/', v.counselor_update_announcement),
     path('api/counselor/announcements/<int:pk>/toggle/', v.counselor_toggle_announcement),
     path('api/counselor/announcements/<int:pk>/delete/', v.counselor_delete_announcement),
+    path('api/trainer/announcements/', v.TrainerAnnouncementListView.as_view()),
+    path('api/trainer/announcements/create/', v.TrainerAnnouncementCreateView.as_view()),
+    path('api/trainer/announcements/<int:pk>/update/', v.trainer_update_announcement),
+    path('api/trainer/announcements/<int:pk>/toggle/', v.trainer_toggle_announcement),
+    path('api/trainer/announcements/<int:pk>/delete/', v.trainer_delete_announcement),
+    path('api/trainer/announcement-batches/', v.trainer_announcement_batches),
+    path('api/trainer/announcement-students/', v.trainer_announcement_students),
 
     # â”€â”€ BRANCH ANNOUNCEMENTS (mentor + student) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     path('api/branch-announcements/', v.branch_announcements),
@@ -205,11 +218,13 @@ urlpatterns = [
     path('api/quiz/result/<int:attempt_id>/', quiz_result_details, name='quiz-result-details'),
     path('api/quiz/attempt/<int:attempt_id>/result/', v.quiz_result),
     path('api/quiz/<int:quiz_id>/take/', student_take_quiz, name='student-take-quiz'),
+    path('api/quiz/<int:quiz_id>/assign/', v.assign_quiz_to_batches),
     path('api/quiz/<int:quiz_id>/toggle-publish/', v.toggle_quiz_publish),
     path('api/quiz/<int:quiz_id>/delete/', v.delete_quiz),
 
     # â”€â”€ COMPLETED STUDENTS â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     path('api/completed-students/', v.CompletedStudentListView.as_view()),
+    path('api/completed-students/report/', v.completed_students_pdf),
     path('api/completed-students/<int:student_id>/report/', v.download_completion_report, name='download-completion-report'),
     path('completed-students/<int:student_id>/report/', v.download_completion_report),
 

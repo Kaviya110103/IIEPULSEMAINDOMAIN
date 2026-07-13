@@ -30,6 +30,7 @@ type QuizItem = {
   user_attempts: number;
   best_score?: number | null;
   status?: "available" | "upcoming" | "expired" | "completed";
+  completed_at?: string;
   category?: string;
 };
 
@@ -43,11 +44,16 @@ type AssignedTestItem = {
 };
 
 type TestResultItem = {
+  id?: number;
   test_id: number;
+  test_title?: string;
+  score?: number;
+  total_questions?: number;
   percentage: number;
+  submitted_at?: string;
 };
 
-type Section = "upcoming" | "excel";
+type Section = "upcoming" | "excel" | "done";
 
 export default function QuizHome() {
   const [loading, setLoading] = useState(true);
@@ -86,21 +92,25 @@ export default function QuizHome() {
     return new Set(testResults.map((result) => result.test_id));
   }, [testResults]);
 
+  const availableAssignedTests = useMemo(() => {
+    return assignedTests.filter((test) => !completedTestIds.has(test.test_id));
+  }, [assignedTests, completedTestIds]);
+
   const availableExcelQuizzes = useMemo(() => {
     return excelQuizzes.filter(
-      (quiz) => (quiz.status || "available") === "available"
+      (quiz) => (quiz.status || "available") === "available" && (quiz.user_attempts || 0) === 0
     );
   }, [excelQuizzes]);
 
   const completedExcelQuizzes = useMemo(() => {
     return excelQuizzes.filter(
-      (quiz) => (quiz.status || "available") !== "available"
+      (quiz) => (quiz.status || "available") !== "available" || (quiz.user_attempts || 0) > 0
     );
   }, [excelQuizzes]);
 
   const startExcelQuiz = (quiz: QuizItem) => {
-    if ((quiz.status || "available") !== "available") {
-      Alert.alert("Quiz unavailable", `This quiz is ${quiz.status || "not available"}.`);
+    if ((quiz.status || "available") !== "available" || (quiz.user_attempts || 0) > 0) {
+      Alert.alert("Already completed", "You have already attended this quiz.");
       return;
     }
 
@@ -155,17 +165,17 @@ export default function QuizHome() {
 
           <View style={styles.statRow}>
             <View style={styles.statPill}>
-              <Text style={styles.statValue}>{assignedTests.length}</Text>
+              <Text style={styles.statValue}>{availableAssignedTests.length}</Text>
               <Text style={styles.statLabel}>Test</Text>
             </View>
             <View style={styles.statPill}>
               <Text style={styles.statValue}>{availableExcelQuizzes.length}</Text>
               <Text style={styles.statLabel}>Quiz</Text>
             </View>
-            <View style={styles.statPill}>
+            <Pressable style={styles.statPill} onPress={() => setSection("done")}>
               <Text style={styles.statValue}>{testResults.length + completedExcelQuizzes.length}</Text>
               <Text style={styles.statLabel}>Done</Text>
-            </View>
+            </Pressable>
           </View>
         </View>
 
@@ -180,7 +190,7 @@ export default function QuizHome() {
               color={section === "upcoming" ? "#FFFFFF" : "#5523D2"}
             />
             <Text style={[styles.segmentText, section === "upcoming" && styles.segmentTextActive]}>
-              Upcoming Test
+              Test
             </Text>
           </Pressable>
           <Pressable
@@ -196,18 +206,29 @@ export default function QuizHome() {
               Quiz
             </Text>
           </Pressable>
+          <Pressable
+            style={[styles.segment, section === "done" && styles.segmentActive]}
+            onPress={() => setSection("done")}
+          >
+            <Ionicons
+              name="checkmark-done-outline"
+              size={17}
+              color={section === "done" ? "#FFFFFF" : "#5523D2"}
+            />
+            <Text style={[styles.segmentText, section === "done" && styles.segmentTextActive]}>
+              Done
+            </Text>
+          </Pressable>
         </View>
 
         {section === "upcoming" ? (
           <View style={styles.sectionWrap}>
             <SectionHeader
-              title="Upcoming Test"
+              title="Test"
               subtitle="Tests created and assigned by your mentor"
             />
-            {assignedTests.length ? (
-              assignedTests.map((test) => {
-                const completed = completedTestIds.has(test.test_id);
-                const result = testResults.find((item) => item.test_id === test.test_id);
+            {availableAssignedTests.length ? (
+              availableAssignedTests.map((test) => {
                 return (
                   <View key={test.id} style={styles.card}>
                     <View style={styles.cardTitleRow}>
@@ -216,8 +237,8 @@ export default function QuizHome() {
                       </View>
                       <View style={styles.cardTitleCopy}>
                         <Text style={styles.cardTitle}>{test.test_title}</Text>
-                        <Text style={[styles.statusPill, completed ? styles.statusDone : styles.statusReady]}>
-                          {completed ? "Completed" : "Ready to attend"}
+                        <Text style={[styles.statusPill, styles.statusReady]}>
+                          Ready to attend
                         </Text>
                       </View>
                     </View>
@@ -233,21 +254,13 @@ export default function QuizHome() {
                         <Ionicons name="calendar-outline" size={15} color="#5523D2" />
                         <Text style={styles.metaText}>{test.assigned_date || "Assigned Test"}</Text>
                       </View>
-                      {result ? (
-                        <View style={styles.metaChip}>
-                          <Ionicons name="trophy-outline" size={15} color="#15803D" />
-                          <Text style={[styles.metaText, styles.scoreMeta]}>Score {result.percentage}%</Text>
-                        </View>
-                      ) : null}
                     </View>
                     <Pressable
-                      style={[styles.startBtn, completed && styles.disabledBtn]}
+                      style={styles.startBtn}
                       onPress={() => startAssignedTest(test)}
                     >
-                      <MaterialIcons name={completed ? "check" : "play-arrow"} size={22} color="#fff" />
-                      <Text style={styles.startBtnText}>
-                        {completed ? "Completed" : "Start Test"}
-                      </Text>
+                      <MaterialIcons name="play-arrow" size={22} color="#fff" />
+                      <Text style={styles.startBtnText}>Start Test</Text>
                     </Pressable>
                   </View>
                 );
@@ -256,36 +269,55 @@ export default function QuizHome() {
               <EmptyCard text="No upcoming tests assigned yet." />
             )}
           </View>
-        ) : (
+        ) : section === "excel" ? (
           <View style={styles.sectionWrap}>
             <SectionHeader
               title="Quiz"
               subtitle="Published quizzes uploaded by your mentor"
             />
-            {availableExcelQuizzes.length || completedExcelQuizzes.length ? (
-              <>
-                {availableExcelQuizzes.map((quiz) => (
+            {availableExcelQuizzes.length ? (
+              availableExcelQuizzes.map((quiz) => (
                   <ExcelQuizCard key={quiz.id} quiz={quiz} onStart={() => startExcelQuiz(quiz)} />
-                ))}
-                {completedExcelQuizzes.length ? (
-                  <View style={styles.historyCard}>
-                    <Text style={styles.historyTitle}>Completed / Closed Quiz</Text>
-                    {completedExcelQuizzes.map((quiz) => (
-                      <View key={quiz.id} style={styles.historyItem}>
-                        <Text style={styles.historyQuizTitle}>{quiz.title}</Text>
-                        <Text style={styles.historyText}>
-                          Status: {(quiz.status || "completed").toUpperCase()}
-                        </Text>
-                        <Text style={styles.historyText}>
-                          Best Score: {quiz.best_score ?? 0}%
-                        </Text>
-                      </View>
-                    ))}
-                  </View>
-                ) : null}
-              </>
+              ))
             ) : (
-              <EmptyCard text="No quizzes published yet." />
+              <EmptyCard text="No quizzes available to attend." />
+            )}
+          </View>
+        ) : (
+          <View style={styles.sectionWrap}>
+            <SectionHeader
+              title="Done"
+              subtitle="Quizzes and tests you already attended"
+            />
+            {testResults.length || completedExcelQuizzes.length ? (
+              <View style={styles.historyCard}>
+                {testResults.map((result) => (
+                  <View key={`test-${result.id || result.test_id}`} style={styles.historyItem}>
+                    <Text style={styles.historyQuizTitle}>
+                      {result.test_title || `Test #${result.test_id}`}
+                    </Text>
+                    <Text style={styles.historyText}>Type: TEST</Text>
+                    <Text style={styles.historyText}>
+                      Score: {result.score ?? "-"} / {result.total_questions ?? "-"} ({result.percentage}%)
+                    </Text>
+                    {!!result.submitted_at && (
+                      <Text style={styles.historyText}>Attended: {new Date(result.submitted_at).toLocaleDateString()}</Text>
+                    )}
+                  </View>
+                ))}
+                {completedExcelQuizzes.map((quiz) => (
+                  <View key={`quiz-${quiz.id}`} style={styles.historyItem}>
+                    <Text style={styles.historyQuizTitle}>{quiz.title}</Text>
+                    <Text style={styles.historyText}>Type: QUIZ</Text>
+                    <Text style={styles.historyText}>Best Score: {quiz.best_score ?? 0}%</Text>
+                    {!!quiz.completed_at && (
+                      <Text style={styles.historyText}>Attended: {new Date(quiz.completed_at).toLocaleDateString()}</Text>
+                    )}
+                  </View>
+                ))}
+              </View>
+            ) : (
+              <EmptyCard text="No attended quizzes or tests yet." />
             )}
           </View>
         )}

@@ -24,6 +24,67 @@ const T = {
 }
 
 // ── Global Styles (matching student UI) ─────────────────────────────────────────────
+const downloadPdf = async (endpoint, filters, filename) => {
+  const params = new URLSearchParams()
+  Object.entries(filters || {}).forEach(([key, value]) => {
+    if (value) params.append(key, value)
+  })
+  const query = params.toString()
+  const res = await api.get(`${endpoint}${query ? `?${query}` : ''}`, { responseType: 'blob' })
+  const url = URL.createObjectURL(new Blob([res.data], { type: 'application/pdf' }))
+  const link = document.createElement('a')
+  link.href = url
+  link.download = filename
+  document.body.appendChild(link)
+  link.click()
+  link.remove()
+  URL.revokeObjectURL(url)
+}
+
+const viewPdf = async (endpoint, filters, filename = 'report.pdf') => {
+  const params = new URLSearchParams()
+  Object.entries(filters || {}).forEach(([key, value]) => {
+    if (value) params.append(key, value)
+  })
+  const query = params.toString()
+  const viewer = window.open('', '_blank')
+  const res = await api.get(`${endpoint}${query ? `?${query}` : ''}`, { responseType: 'blob' })
+  const url = URL.createObjectURL(new Blob([res.data], { type: 'application/pdf' }))
+  if (viewer) {
+    viewer.document.write(`
+      <!doctype html>
+      <html>
+        <head>
+          <title>${filename}</title>
+          <style>
+            html, body { margin: 0; height: 100%; font-family: Arial, sans-serif; background: #111827; }
+            .bar { height: 48px; display: flex; align-items: center; justify-content: space-between; padding: 0 14px; background: #0f172a; color: #fff; box-sizing: border-box; }
+            .title { font-size: 14px; font-weight: 800; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+            .download { color: #0f172a; background: #fff; border-radius: 8px; padding: 8px 12px; font-size: 12px; font-weight: 900; text-decoration: none; }
+            iframe { width: 100%; height: calc(100% - 48px); border: 0; background: #fff; }
+          </style>
+        </head>
+        <body>
+          <div class="bar">
+            <div class="title">${filename}</div>
+            <a class="download" href="${url}" download="${filename}">Download PDF</a>
+          </div>
+          <iframe src="${url}"></iframe>
+        </body>
+      </html>
+    `)
+    viewer.document.close()
+  } else {
+    const link = document.createElement('a')
+    link.href = url
+    link.target = '_blank'
+    link.rel = 'noopener noreferrer'
+    document.body.appendChild(link)
+    link.click()
+    link.remove()
+  }
+}
+
 export function AdminStyles() {
   return (
     <style>{`
@@ -544,6 +605,7 @@ function UserMonitoringPage({ type }) {
   const [records, setRecords] = useState([])
   const [filterOptions, setFilterOptions] = useState({})
   const [loading, setLoading] = useState(true)
+  const [downloading, setDownloading] = useState(false)
   const [filters, setFilters] = useState({
     date_from: '',
     date_to: '',
@@ -579,12 +641,29 @@ function UserMonitoringPage({ type }) {
     load(empty)
   }
 
+  const handleDownload = async () => {
+    setDownloading(true)
+    try {
+      await downloadPdf(
+        `${endpoint}report/`,
+        filters,
+        isEmployee ? 'employee_monitoring_report.pdf' : 'student_monitoring_report.pdf'
+      )
+      toast.success('PDF downloaded')
+    } catch (err) {
+      toast.error(err.response?.data?.error || 'Failed to download PDF')
+    } finally {
+      setDownloading(false)
+    }
+  }
+
   return (
     <div className="admin-root">
       <AdminStyles />
       <AdminPageHeader
         title={isEmployee ? 'Employee Monitoring' : 'Student Monitoring'}
         sub={isEmployee ? 'Login, logout, and last-seen activity for employees and counselors' : 'Login, logout, and last-seen activity for students'}
+        btn={<button className="admin-btn admin-btn-primary" type="button" onClick={handleDownload} disabled={downloading}><i className="fas fa-file-pdf" /> {downloading ? 'Downloading...' : 'Download PDF'}</button>}
       />
       <MonitoringFilters type={type} filters={filters} setFilters={setFilters} options={filterOptions} onApply={load} onClear={clearFilters} />
       <div className="admin-card">
@@ -763,11 +842,457 @@ export function AdminDashboard() {
 // ══════════════════════════════════════════════════════════════════════════════
 // LEAVE TABLE (Reusable component)
 // ══════════════════════════════════════════════════════════════════════════════
+const fmtDateTime = (value) => value ? new Date(value).toLocaleString('en-IN') : '-'
+const fmtDateOnly = (value) => value ? new Date(value).toLocaleDateString('en-IN') : '-'
+
+function TinyMetric({ label, value, icon = 'fa-chart-simple', color = T.teal }) {
+  return (
+    <div className="admin-card" style={{ padding: 14, minHeight: 96 }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}>
+        <div>
+          <div style={{ color: '#0f172a', fontSize: 24, fontWeight: 900, lineHeight: 1 }}>{value ?? 0}</div>
+          <div style={{ color: T.slate, fontSize: 11, fontWeight: 800, marginTop: 6 }}>{label}</div>
+        </div>
+        <div style={{ width: 34, height: 34, borderRadius: 10, background: `${color}22`, color, display: 'grid', placeItems: 'center' }}>
+          <i className={`fas ${icon}`} />
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function TrackBar({ label, value, color = T.teal, labelColor = '#334155', trackColor = '#e2e8f0' }) {
+  const pct = Math.max(0, Math.min(100, Number(value) || 0))
+  return (
+    <div style={{ marginBottom: 11 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, fontSize: 11, fontWeight: 800, color: labelColor, marginBottom: 5 }}>
+        <span>{label}</span><span>{pct}%</span>
+      </div>
+      <div style={{ height: 8, borderRadius: 999, background: trackColor, overflow: 'hidden' }}>
+        <div style={{ width: `${pct}%`, height: '100%', borderRadius: 999, background: color }} />
+      </div>
+    </div>
+  )
+}
+
+function TrackingList({ title, items = [], render }) {
+  return (
+    <div className="admin-card" style={{ padding: 18 }}>
+      <AdminSectionHeader title={title} count={items.length} />
+      <div style={{ maxHeight: 290, overflow: 'auto' }}>
+        {items.length ? items.map((item, idx) => (
+          <div key={idx} style={{ padding: '11px 0', borderBottom: '1px solid #e2e8f0', fontSize: 12, color: '#334155' }}>{render(item)}</div>
+        )) : <AdminEmpty msg={`No ${title.toLowerCase()} found`} />}
+      </div>
+    </div>
+  )
+}
+
+function NewTrackingBadge({ text = 'New' }) {
+  return (
+    <span style={{
+      display: 'inline-flex',
+      alignItems: 'center',
+      gap: 5,
+      padding: '3px 8px',
+      borderRadius: 999,
+      background: '#dcfce7',
+      color: '#15803d',
+      border: '1px solid #bbf7d0',
+      fontSize: 10,
+      fontWeight: 900,
+      textTransform: 'uppercase',
+      letterSpacing: 0,
+      whiteSpace: 'nowrap',
+    }}>
+      <i className="fas fa-star" /> {text}
+    </span>
+  )
+}
+
+function TrackingMiniStat({ label, value, icon, color = '#2563eb' }) {
+  return (
+    <div style={{
+      border: '1px solid #e2e8f0',
+      borderRadius: 12,
+      padding: '11px 12px',
+      background: '#fff',
+      display: 'flex',
+      alignItems: 'center',
+      justifyContent: 'space-between',
+      gap: 10,
+      minHeight: 62,
+    }}>
+      <div>
+        <div style={{ fontSize: 21, fontWeight: 900, color: '#0f172a', lineHeight: 1 }}>{value ?? 0}</div>
+        <div style={{ marginTop: 5, fontSize: 11, fontWeight: 800, color: T.slate }}>{label}</div>
+      </div>
+      <div style={{ width: 32, height: 32, borderRadius: 10, display: 'grid', placeItems: 'center', background: `${color}18`, color }}>
+        <i className={`fas ${icon}`} />
+      </div>
+    </div>
+  )
+}
+
+function TrackingDonut({ value, color = '#2563eb', size = 92, label }) {
+  const pct = Math.max(0, Math.min(100, Number(value) || 0))
+  const inner = Math.max(46, size - 28)
+  return (
+    <div style={{ display: 'grid', justifyItems: 'center', gap: 6 }}>
+      <div style={{ width: size, height: size, borderRadius: '50%', background: `conic-gradient(${color} ${pct * 3.6}deg, #e2e8f0 0deg)`, display: 'grid', placeItems: 'center', flex: '0 0 auto' }}>
+        <div style={{ width: inner, height: inner, borderRadius: '50%', background: '#fff', display: 'grid', placeItems: 'center', color, fontSize: Math.max(15, size / 4.3), fontWeight: 900 }}>
+          {pct}%
+        </div>
+      </div>
+      {label && <div style={{ color: T.slate, fontSize: 11, fontWeight: 900, textAlign: 'center' }}>{label}</div>}
+    </div>
+  )
+}
+
+function PerformanceMetricRow({ label, count, value, icon, color, action }) {
+  const pct = Math.max(0, Math.min(100, Number(value) || 0))
+  return (
+    <div style={{ border: '1px solid #e2e8f0', borderRadius: 13, background: '#f8fafc', padding: 13 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+        <div style={{ width: 40, height: 40, borderRadius: 12, display: 'grid', placeItems: 'center', background: `${color}18`, color, flex: '0 0 auto' }}>
+          <i className={`fas ${icon}`} />
+        </div>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, alignItems: 'center' }}>
+            <div style={{ color: '#0f172a', fontSize: 13, fontWeight: 900 }}>{label}</div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <div style={{ color, fontSize: 18, fontWeight: 900 }}>{count ?? 0}</div>
+              {action}
+            </div>
+          </div>
+          <TrackBar label={`${label} graph`} value={pct} color={color} />
+        </div>
+      </div>
+    </div>
+  )
+}
+
+export function AdminEmployeeTracking() {
+  const [data, setData] = useState(null)
+  const [loading, setLoading] = useState(true)
+  const [loginModalOpen, setLoginModalOpen] = useState(false)
+  const [reportDownloading, setReportDownloading] = useState(false)
+
+  const load = (params = '') => {
+    setLoading(true)
+    api.get(`/admin/employee-tracking/${params}`).then(r => setData(r.data)).catch(err => {
+      toast.error(err.response?.data?.error || 'Failed to load employee tracking')
+    }).finally(() => setLoading(false))
+  }
+
+  useEffect(() => { load(window.location.search || '') }, [])
+
+  if (loading) return <div className="admin-root"><AdminStyles /><AdminSpin /></div>
+  if (!data) return <div className="admin-root"><AdminStyles /><AdminEmpty msg="No tracking data found" /></div>
+
+  const displayBranch = (branch) => ({
+    '100ft': '100ft',
+    hopes: 'Hopes',
+    kuniyamuthur: 'Kuniyamuthur',
+    kunniyamuthur: 'Kuniyamuthur',
+  }[branch] || branch || 'Unassigned')
+
+  const Crumb = () => (
+    <div className="admin-crumb">
+      <button className="admin-crumb-btn" onClick={() => load()}><i className="fas fa-sitemap" style={{ marginRight: 5 }} />Branches</button>
+      {data.branch && <><span className="admin-crumb-sep">/</span><button className="admin-crumb-btn" onClick={() => load(`?branch=${encodeURIComponent(data.branch)}`)}>{displayBranch(data.branch)}</button></>}
+      {data.view_mode === 'staff_detail' && <><span className="admin-crumb-sep">/</span><span style={{ fontWeight: 800 }}>{data.staff?.staff?.first_name} {data.staff?.staff?.last_name || ''}</span></>}
+    </div>
+  )
+
+  if (data.view_mode === 'branches') {
+    return (
+      <div className="admin-root admin-fade">
+        <AdminStyles />
+        <AdminPageHeader title="Employee Tracking" sub="Branch-wise staff activity, student handling, content, attendance, login, and session progress" />
+        <div className="admin-stat-grid" style={{ gridTemplateColumns: 'repeat(4, 1fr)' }}>
+          <TinyMetric label="Branches" value={data.totals?.branches} icon="fa-building" color="#2563eb" />
+          <TinyMetric label="Staff" value={data.totals?.staff} icon="fa-user-tie" color="#059669" />
+          <TinyMetric label="Students" value={data.totals?.students} icon="fa-user-graduate" color="#ca8a04" />
+          <TinyMetric label="Batches" value={data.totals?.batches} icon="fa-layer-group" color="#7c3aed" />
+        </div>
+        <div className="admin-row-grid-2">
+          {(data.branch_cards || []).map((branch, index) => {
+            const color = ['#2563eb', '#059669', '#ca8a04'][index % 3]
+            return (
+              <div key={branch.branch} className="admin-card" onClick={() => load(`?branch=${encodeURIComponent(branch.branch)}`)} style={{ padding: 18, cursor: 'pointer' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', gap: 14, alignItems: 'flex-start' }}>
+                  <div>
+                    <div style={{ width: 44, height: 44, borderRadius: 12, background: `${color}22`, color, display: 'grid', placeItems: 'center', marginBottom: 10 }}><i className="fas fa-building" /></div>
+                    <h4 style={{ margin: 0, textTransform: 'capitalize', fontFamily: "'Playfair Display'" }}>{displayBranch(branch.branch)}</h4>
+                    <div style={{ color: T.slate, fontSize: 12, marginTop: 5 }}>{branch.staff_count} staff | {branch.student_count} students | {branch.batch_count} batches</div>
+                  </div>
+                  <div style={{ width: 72, height: 72, borderRadius: '50%', background: `conic-gradient(${color} ${(branch.activity_score || 0) * 3.6}deg, #e2e8f0 0deg)`, display: 'grid', placeItems: 'center' }}>
+                    <div style={{ width: 54, height: 54, borderRadius: '50%', background: '#fff', display: 'grid', placeItems: 'center', color, fontWeight: 900 }}>{branch.activity_score || 0}%</div>
+                  </div>
+                </div>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 8, marginTop: 16 }}>
+                  <AdminBadge text={`${branch.attendance_marked_count} attendance`} variant="info" />
+                  <AdminBadge text={`${branch.sessions_completed} sessions`} variant="teal" />
+                  <AdminBadge text={`${branch.materials_count} materials`} variant="success" />
+                  <AdminBadge text={`${branch.quizzes_count} quizzes`} variant="warning" />
+                </div>
+              </div>
+            )
+          })}
+        </div>
+      </div>
+    )
+  }
+
+  if (data.view_mode === 'branch_staff') {
+    return (
+      <div className="admin-root admin-fade">
+        <AdminStyles />
+        <Crumb />
+        <AdminPageHeader title={`${displayBranch(data.branch)} Employee Tracking`} sub="Select a staff member to see detailed work activity" />
+        <div className="admin-stat-grid" style={{ gridTemplateColumns: 'repeat(4, 1fr)' }}>
+          <TinyMetric label="Staff" value={data.totals?.staff} icon="fa-user-tie" color="#2563eb" />
+          <TinyMetric label="Handled Students" value={data.totals?.students} icon="fa-user-graduate" color="#059669" />
+          <TinyMetric label="Batches" value={data.totals?.batches} icon="fa-layer-group" color="#ca8a04" />
+          <TinyMetric label="Completed Students" value={data.totals?.completed_students} icon="fa-user-check" color="#7c3aed" />
+        </div>
+        <div className="admin-row-grid-2">
+          {(data.staff || []).map(item => (
+            <div key={item.staff.id} className="admin-card" onClick={() => load(`?branch=${encodeURIComponent(data.branch)}&staff_id=${item.staff.id}`)} style={{ padding: 18, cursor: 'pointer' }}>
+              <div style={{ display: 'flex', gap: 14, alignItems: 'center' }}>
+                <AdminAvatar name={item.staff.first_name} size={46} />
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontWeight: 900 }}>{item.staff.first_name} {item.staff.last_name || ''}</div>
+                  <div style={{ color: T.slate, fontSize: 12 }}>{item.staff.designation || 'Staff'} | Last login: {fmtDateTime(item.last_login)}</div>
+                </div>
+                <div style={{ textAlign: 'right', color: '#0f172a', fontWeight: 900 }}>{item.activity_score}%</div>
+              </div>
+              <div style={{ marginTop: 15 }}>
+                <TrackBar label="Session completion" value={item.session_completion_percentage} color="#059669" />
+                <TrackBar label="Activity score" value={item.activity_score} color="#2563eb" />
+              </div>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 8, marginTop: 10 }}>
+                <AdminBadge text={`${item.student_count} students`} />
+                <AdminBadge text={`${item.batch_count} batches`} variant="info" />
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+    )
+  }
+
+  const staff = data.staff || {}
+  const staffInfo = staff.staff || {}
+  const staffName = `${staffInfo.first_name || ''} ${staffInfo.last_name || ''}`.trim() || 'Staff'
+  const reportFilename = `staff_activity_${staffName.replace(/[^a-zA-Z0-9]/g, '_')}.pdf`
+  const handleDownloadStaffReport = async () => {
+    setReportDownloading(true)
+    try {
+      await viewPdf(
+        '/admin/employee-tracking/report/',
+        { staff_id: staffInfo.id },
+        reportFilename
+      )
+      toast.success('Staff activity report opened')
+    } catch (err) {
+      toast.error(err.response?.data?.error || 'Failed to open report')
+    } finally {
+      setReportDownloading(false)
+    }
+  }
+
+  return (
+    <div className="admin-root admin-fade">
+      <AdminStyles />
+      <Crumb />
+      <div style={{
+        position: 'relative',
+        borderRadius: 20,
+        padding: 20,
+        marginBottom: 18,
+        background: 'linear-gradient(135deg, #0f172a 0%, #164e63 58%, #f59e0b 160%)',
+        color: '#fff',
+        boxShadow: '0 18px 42px rgba(15,23,42,.18)',
+      }}>
+        <button
+          type="button"
+          onClick={handleDownloadStaffReport}
+          disabled={reportDownloading}
+          style={{ position: 'absolute', top: 16, right: 16, border: '1px solid rgba(255,255,255,.28)', background: 'rgba(255,255,255,.14)', color: '#fff', borderRadius: 10, padding: '8px 12px', fontSize: 12, fontWeight: 900, cursor: reportDownloading ? 'not-allowed' : 'pointer', backdropFilter: 'blur(8px)', opacity: reportDownloading ? .72 : 1 }}
+        >
+          <i className="fas fa-file-pdf" style={{ marginRight: 7 }} /> {reportDownloading ? 'Opening...' : 'View Report'}
+        </button>
+        <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1.25fr) minmax(300px, .75fr)', gap: 18, alignItems: 'center' }}>
+          <div style={{ display: 'flex', gap: 16, alignItems: 'center', minWidth: 0 }}>
+            <AdminAvatar name={staffInfo.first_name || 'Staff'} size={64} />
+            <div style={{ minWidth: 0 }}>
+              <div style={{ fontSize: 26, fontWeight: 900, lineHeight: 1.1 }}>{staffInfo.first_name || ''} {staffInfo.last_name || ''}</div>
+              <div style={{ marginTop: 6, color: 'rgba(255,255,255,.76)', fontSize: 13, fontWeight: 800 }}>{staffInfo.designation || 'Staff'} | {displayBranch(staffInfo.branch)} | Last login {fmtDateTime(staff.last_login)}</div>
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 12 }}>
+                <span style={{ border: '1px solid rgba(255,255,255,.18)', background: 'rgba(255,255,255,.1)', borderRadius: 999, padding: '6px 10px', fontSize: 11, fontWeight: 900 }}>{staff.student_count || 0} students handled</span>
+                <span style={{ border: '1px solid rgba(255,255,255,.18)', background: 'rgba(255,255,255,.1)', borderRadius: 999, padding: '6px 10px', fontSize: 11, fontWeight: 900 }}>{staff.batch_count || 0} batches</span>
+                <span style={{ border: '1px solid rgba(255,255,255,.18)', background: 'rgba(255,255,255,.1)', borderRadius: 999, padding: '6px 10px', fontSize: 11, fontWeight: 900 }}>{staff.new_students_count || 0} new students</span>
+              </div>
+            </div>
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: '92px 1fr', gap: 15, alignItems: 'center' }}>
+            <div style={{ width: 88, height: 88, borderRadius: '50%', background: `conic-gradient(#f59e0b ${(data.charts?.login_usage || 0) * 3.6}deg, rgba(255,255,255,.16) 0deg)`, display: 'grid', placeItems: 'center' }}>
+              <div style={{ width: 66, height: 66, borderRadius: '50%', background: 'rgba(15,23,42,.9)', display: 'grid', placeItems: 'center', color: '#fff', fontSize: 18, fontWeight: 900 }}>{data.charts?.login_usage || 0}%</div>
+            </div>
+            <div>
+              <TrackBar label={`Login usage (${data.charts?.login_usage || 0}%)`} value={data.charts?.login_usage} color="#f59e0b" labelColor="rgba(255,255,255,.86)" trackColor="rgba(255,255,255,.16)" />
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div className="admin-card" style={{ padding: 20 }}>
+        <AdminSectionHeader title="Performance Graph" />
+        <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) 210px', gap: 18, alignItems: 'center' }}>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 12 }}>
+            <PerformanceMetricRow label="Materials Upload" count={staff.materials_uploaded} value={data.charts?.material_upload} icon="fa-cloud-arrow-up" color="#0891b2" />
+            <PerformanceMetricRow label="Quiz Upload" count={staff.quizzes_created} value={data.charts?.quiz_upload} icon="fa-circle-question" color="#7c3aed" />
+            <PerformanceMetricRow label="Batch Completion" count={`${staff.completed_batch_count || 0}/${staff.batch_count || 0} batches`} value={data.charts?.batch_completion} icon="fa-layer-group" color="#059669" />
+            <PerformanceMetricRow
+              label="Login Usage"
+              count={`${staff.login_usage_count ?? 0}/${staff.login_usage_target || 7} logins`}
+              value={data.charts?.login_usage}
+              icon="fa-right-to-bracket"
+              color="#ca8a04"
+              action={(
+                <button
+                  type="button"
+                  onClick={() => setLoginModalOpen(true)}
+                  style={{ border: '1px solid #fed7aa', background: '#fff7ed', color: '#9a3412', borderRadius: 8, padding: '5px 8px', fontSize: 10, fontWeight: 900, cursor: 'pointer' }}
+                >
+                  View Login
+                </button>
+              )}
+            />
+          </div>
+          <div style={{ border: '1px solid #e2e8f0', borderRadius: 18, minHeight: 250, display: 'grid', placeItems: 'center', background: 'linear-gradient(180deg,#fff,#f8fafc)' }}>
+            <TrackingDonut value={data.charts?.activity_score} color="#0f766e" size={142} label="Overall Performance" />
+          </div>
+        </div>
+      </div>
+
+      <div className="admin-card" style={{ marginTop: 18, padding: 18 }}>
+        <AdminSectionHeader title="Batch-wise Session and Student Attendance Progress" count={(data.batch_details || []).length} />
+        <div style={{ display: 'grid', gap: 14 }}>
+          {(data.batch_details || []).map(batch => (
+            <div key={batch.id} style={{ border: '1px solid #e2e8f0', borderRadius: 12, padding: 14, background: batch.is_new ? '#f0fdf4' : '#fff' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', gap: 14, alignItems: 'flex-start', flexWrap: 'wrap' }}>
+                <div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                    <h4 style={{ margin: 0, color: '#0f172a' }}>{batch.batch_number}</h4>
+                    {batch.is_new && <NewTrackingBadge text="New Batch" />}
+                  </div>
+                  <div style={{ color: T.slate, fontSize: 12, marginTop: 4 }}>{batch.course || '-'} | {batch.course_type || '-'} | {batch.timing || '-'}</div>
+                </div>
+                <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap', justifyContent: 'flex-end', alignItems: 'center' }}>
+                  <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+                    <AdminBadge text={`${batch.student_count} students`} variant="info" />
+                    <AdminBadge text={`${batch.new_student_count || 0} new`} variant="success" />
+                    <AdminBadge text={`${batch.content_upload_total || 0} uploads`} variant="teal" />
+                    <AdminBadge text={`${batch.sessions_completed || 0}/${batch.total_sessions || 0} sessions done`} variant="warning" />
+                  </div>
+                  <TrackingDonut value={batch.session_percentage} color="#059669" size={88} label="Sessions" />
+                </div>
+              </div>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(155px, 1fr))', gap: 10, marginTop: 14 }}>
+                <TrackingMiniStat label="Materials Uploaded" value={batch.materials_uploaded} icon="fa-cloud-arrow-up" color="#0891b2" />
+                <TrackingMiniStat label="Quizzes Uploaded" value={batch.quizzes_uploaded} icon="fa-circle-question" color="#7c3aed" />
+              </div>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 14, marginTop: 13 }}>
+                <TrackBar label={`Batch session progress (${batch.sessions_completed}/${batch.total_sessions})`} value={batch.session_percentage} color="#059669" />
+                <TrackBar label={`Batch attendance progress (${batch.attendance_present}/${batch.attendance_total})`} value={batch.attendance_percentage} color="#2563eb" />
+              </div>
+              {(batch.recent_uploads || []).length > 0 && (
+                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 4, marginBottom: 8 }}>
+                  {(batch.recent_uploads || []).slice(0, 6).map((item, idx) => (
+                    <span key={`${item.kind}-${idx}`} style={{ border: '1px solid #e2e8f0', borderRadius: 999, padding: '5px 9px', background: '#f8fafc', color: '#334155', fontSize: 11, fontWeight: 800 }}>
+                      {item.kind}: {item.title || '-'}
+                    </span>
+                  ))}
+                </div>
+              )}
+              <div style={{ overflowX: 'auto', marginTop: 8 }}>
+                <table className="admin-table">
+                  <thead><tr><th>Student</th><th>Attendance Progress</th><th>Session Progress</th><th>Created</th></tr></thead>
+                  <tbody>
+                    {(batch.students || []).map(student => (
+                      <tr key={student.id}>
+                        <td>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                            <strong>{student.name}</strong>
+                            {student.is_new && <NewTrackingBadge text="New Student" />}
+                          </div>
+                          <div style={{ color: T.slate, fontSize: 11 }}>{student.student_id} | {student.mobile_no}</div>
+                        </td>
+                        <td>{student.attendance_present}/{student.attendance_total} ({student.attendance_percentage}%)</td>
+                        <td>{student.sessions_completed}/{student.total_sessions} ({student.session_percentage}%)</td>
+                        <td>{fmtDateOnly(student.created_at)}</td>
+                      </tr>
+                    ))}
+                    {(batch.students || []).length === 0 && <tr><td colSpan="4"><AdminEmpty msg="No students assigned to this batch" /></td></tr>}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          ))}
+          {(data.batch_details || []).length === 0 && <AdminEmpty msg="No batches handled by this staff" icon="fa-layer-group" />}
+        </div>
+      </div>
+
+      <AdminModal open={loginModalOpen} onClose={() => setLoginModalOpen(false)} title={`${staffInfo.first_name || ''} ${staffInfo.last_name || ''} - Weekly Login`} size="lg">
+        <div style={{ display: 'grid', gap: 14 }}>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 10 }}>
+            <TrackingMiniStat label="Last 7 Days Logins" value={staff.login_usage_count || 0} icon="fa-right-to-bracket" color="#ca8a04" />
+            <TrackingMiniStat label="Target Logins" value={staff.login_usage_target || 7} icon="fa-bullseye" color="#2563eb" />
+            <TrackingMiniStat label="Usage" value={`${data.charts?.login_usage || 0}%`} icon="fa-chart-simple" color="#059669" />
+          </div>
+          <div style={{ border: '1px solid #e2e8f0', borderRadius: 14, background: '#f8fafc', overflow: 'hidden' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'center', padding: '12px 14px', borderBottom: '1px solid #e2e8f0', background: '#fff' }}>
+              <div>
+                <div style={{ fontSize: 14, fontWeight: 900, color: T.ink }}>Login Records</div>
+                <div style={{ fontSize: 11, color: T.slate, fontWeight: 800 }}>Last 7 days activity</div>
+              </div>
+              <AdminBadge text={`${(data.weekly_login_records || []).length} records`} variant="warning" />
+            </div>
+            <div style={{ maxHeight: '52vh', overflow: 'auto', padding: 12 }}>
+              {(data.weekly_login_records || []).length ? (
+                <table className="admin-table" style={{ margin: 0, minWidth: 620 }}>
+                  <thead>
+                    <tr><th style={{ width: '34%' }}>Login</th><th style={{ width: '33%' }}>Logout</th><th style={{ width: '33%' }}>Last Seen</th></tr>
+                  </thead>
+                  <tbody>
+                    {(data.weekly_login_records || []).map((item, idx) => (
+                      <tr key={idx}>
+                        <td><strong>{fmtDateTime(item.login_time)}</strong></td>
+                        <td>{item.logout_time ? fmtDateTime(item.logout_time) : <AdminBadge text="Still active" variant="success" />}</td>
+                        <td>{fmtDateTime(item.last_seen)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              ) : <AdminEmpty msg="No login records in the last 7 days" icon="fa-user-clock" />}
+            </div>
+          </div>
+        </div>
+      </AdminModal>
+
+    </div>
+  )
+}
+
 function ModernAdminDashboard({ stats, navigate }) {
   const branchStudentCounts = stats?.student_branch_counts || []
   const batchBranchCounts = stats?.batch_branch_counts || []
   const completedBranchCounts = stats?.completed_branch_counts || []
   const branchUsageStats = stats?.branch_usage_stats || []
+  const branchTrackingCards = stats?.branch_tracking_cards || []
   const maxBranchCount = Math.max(...branchStudentCounts.map(item => item.count || 0), 1)
   const displayBranch = (branch) => {
     const labels = {
@@ -1070,6 +1595,76 @@ function ModernAdminDashboard({ stats, navigate }) {
               </div>
             )
           })}
+        </div>
+      </div>
+      <div style={{ marginTop: 18 }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, marginBottom: 12, flexWrap: 'wrap' }}>
+          <div>
+            <div style={{ color: '#64748b', fontSize: 10, fontWeight: 900, letterSpacing: '.12em', textTransform: 'uppercase' }}>Track Activity</div>
+            <h3 style={{ margin: '2px 0 0', color: '#0f172a', fontSize: 19, fontWeight: 900 }}>Branch Staff Activity</h3>
+          </div>
+          <button
+            type="button"
+            onClick={() => navigate('/admin/employee-tracking')}
+            style={{
+              border: '1px solid #e2e8f0',
+              background: '#fff',
+              color: '#334155',
+              borderRadius: 10,
+              padding: '9px 12px',
+              fontSize: 12,
+              fontWeight: 900,
+              cursor: 'pointer',
+            }}
+          >
+            <i className="fas fa-list" style={{ marginRight: 7 }} /> View All
+          </button>
+        </div>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 16 }}>
+          {branchTrackingCards.map((branch, index) => {
+            const color = ['#2563eb', '#059669', '#ca8a04'][index % 3]
+            const soft = ['#dbeafe', '#d1fae5', '#fef3c7'][index % 3]
+            const score = Math.max(0, Math.min(100, Number(branch.activity_score) || 0))
+            return (
+              <button
+                key={branch.branch}
+                type="button"
+                onClick={() => navigate(`/admin/employee-tracking?branch=${encodeURIComponent(branch.branch)}`)}
+                style={{
+                  borderRadius: 20,
+                  background: '#fff',
+                  border: '1px solid rgba(226,232,240,.9)',
+                  padding: 24,
+                  minHeight: 205,
+                  cursor: 'pointer',
+                  textAlign: 'left',
+                  boxShadow: '0 18px 38px rgba(15,23,42,.08)',
+                }}
+              >
+                <div style={{ display: 'flex', justifyContent: 'space-between', gap: 16, alignItems: 'flex-start' }}>
+                  <div>
+                    <div style={{ width: 64, height: 64, borderRadius: 16, background: soft, color, display: 'grid', placeItems: 'center', fontSize: 20, marginBottom: 14 }}>
+                      <i className="fas fa-building" />
+                    </div>
+                    <h4 style={{ margin: 0, color: '#0f172a', fontSize: 20, fontWeight: 900 }}>{displayBranch(branch.branch)}</h4>
+                    <div style={{ color: '#7891b0', fontSize: 16, marginTop: 8, fontWeight: 700 }}>
+                      {branch.staff_count} staff | {branch.student_count} students | {branch.batch_count} batches
+                    </div>
+                  </div>
+                  <div style={{ width: 108, height: 108, borderRadius: '50%', background: `conic-gradient(${color} ${score * 3.6}deg, #e2e8f0 0deg)`, display: 'grid', placeItems: 'center', flex: '0 0 auto' }}>
+                    <div style={{ width: 78, height: 78, borderRadius: '50%', background: '#fff', display: 'grid', placeItems: 'center', color, fontSize: 22, fontWeight: 900 }}>{score}%</div>
+                  </div>
+                </div>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, minmax(0, 1fr))', gap: 12, marginTop: 25 }}>
+                  <AdminBadge text={`${branch.attendance_marked_count} attendance`} variant="info" />
+                  <AdminBadge text={`${branch.sessions_completed} sessions`} variant="teal" />
+                  <AdminBadge text={`${branch.materials_count} materials`} variant="success" />
+                  <AdminBadge text={`${branch.quizzes_count} quizzes`} variant="warning" />
+                </div>
+              </button>
+            )
+          })}
+          {branchTrackingCards.length === 0 && <AdminEmpty msg="No branch tracking data found" icon="fa-users-viewfinder" />}
         </div>
       </div>
     </div>
@@ -2727,6 +3322,7 @@ export function CompletedStudents() {
   const [students, setStudents] = useState([])
   const [filteredStudents, setFilteredStudents] = useState([])
   const [loading, setLoading] = useState(true)
+  const [downloadingPdf, setDownloadingPdf] = useState(false)
   const [currentPage, setCurrentPage] = useState(1)
   const itemsPerPage = 10
 
@@ -2895,6 +3491,19 @@ export function CompletedStudents() {
     applyFilters(students, resetFilters)
   }
 
+  const downloadCompletedStudentsPdf = async () => {
+    setDownloadingPdf(true)
+    try {
+      await downloadPdf('/completed-students/report/', filters, 'completed_students_report.pdf')
+      toast.success('Completed students PDF downloaded')
+    } catch (err) {
+      console.error('Completed students PDF error:', err)
+      toast.error('Failed to download completed students PDF')
+    } finally {
+      setDownloadingPdf(false)
+    }
+  }
+
   const downloadReport = async (studentId, studentName) => {
   try {
     toast.loading(`Opening report for ${studentName}…`, { id: 'dl' })
@@ -2963,6 +3572,7 @@ const totalPages = Math.ceil(filteredStudents.length / itemsPerPage)
       <AdminPageHeader
         title="🎓 Completed Students - All Branches"
         sub="Students who have successfully completed their courses across all branches"
+        btn={<button className="admin-btn admin-btn-primary" onClick={downloadCompletedStudentsPdf} disabled={downloadingPdf}><i className={`fas ${downloadingPdf ? 'fa-spinner fa-spin' : 'fa-file-pdf'}`} /> {downloadingPdf ? 'Downloading...' : 'Download PDF'}</button>}
       />
 
       {/* Statistics Cards */}
@@ -3550,7 +4160,9 @@ function AdminModal({ open, onClose, title, children, size = 'sm' }) {
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'center',
-
+        padding: 18,
+        background: 'rgba(15,23,42,.28)',
+        backdropFilter: 'blur(2px)',
       }}
       onClick={(e) => {
         if (e.target === e.currentTarget) onClose()
@@ -3563,12 +4175,11 @@ function AdminModal({ open, onClose, title, children, size = 'sm' }) {
           width: '100%',
           maxWidth: maxW,
           maxHeight: '90vh',
-          margin: '300px',
           display: 'flex',
           flexDirection: 'column',
           boxShadow: '0 20px 60px rgba(0, 0, 0, 0.15)',
           pointerEvents: 'auto',
-          marginTop: '450px'
+          overflow: 'hidden',
         }}
       >
         <div

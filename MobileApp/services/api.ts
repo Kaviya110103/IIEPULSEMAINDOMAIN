@@ -1,10 +1,9 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import axios from "axios";
-import Constants from "expo-constants";
 import { Platform } from "react-native";
 
-const LOCAL_API = "http://192.168.1.8:8000/api/";
 const PRODUCTION_API = "https://testiie.indrainstitute.com/api/";
+const LOCAL_LAN_API = "https://testiie.indrainstitute.com/api/";
 const DEFAULT_API = PRODUCTION_API;
 
 function normalizeApiBaseUrl(url: string) {
@@ -28,32 +27,6 @@ function getEnvApiBaseUrl() {
   return normalizeApiBaseUrl(envApiUrl);
 }
 
-function getExpoHostName() {
-  const constants = Constants as any;
-  const hostUri =
-    constants?.expoConfig?.hostUri ||
-    constants?.manifest?.debuggerHost ||
-    constants?.manifest2?.extra?.expoClient?.hostUri;
-
-  return typeof hostUri === "string" ? hostUri.split(":")[0] : "";
-}
-
-function getExpoApiBaseUrl() {
-  const hostName = getExpoHostName();
-
-  if (
-    !hostName ||
-    hostName === "localhost" ||
-    hostName === "127.0.0.1" ||
-    hostName === "10.0.2.2" ||
-    hostName === "10.0.3.2"
-  ) {
-    return "";
-  }
-
-  return normalizeApiBaseUrl(`http://${hostName}:8000/api/`);
-}
-
 function getApiBaseUrl() {
   const envApiUrl = getEnvApiBaseUrl();
 
@@ -63,20 +36,6 @@ function getApiBaseUrl() {
 
   if (Platform.OS !== "web") {
     return DEFAULT_API;
-  }
-
-  const expoApiUrl = getExpoApiBaseUrl();
-  if (expoApiUrl) {
-    return expoApiUrl;
-  }
-
-  const hostname =
-    typeof window !== "undefined" ? window.location.hostname : "localhost";
-  const protocol =
-    typeof window !== "undefined" ? window.location.protocol : "http:";
-
-  if (hostname && hostname !== "localhost" && hostname !== "127.0.0.1") {
-    return normalizeApiBaseUrl(`${protocol}//${hostname}:8000/api/`);
   }
 
   return DEFAULT_API;
@@ -95,18 +54,8 @@ function getCandidateApiBaseUrls() {
   }
 
   urls.add(API_BASE_URL);
+  urls.add(LOCAL_LAN_API);
   urls.add(DEFAULT_API);
-
-  const expoApiUrl = getExpoApiBaseUrl();
-  if (expoApiUrl) {
-    urls.add(expoApiUrl);
-  }
-
-  urls.add(LOCAL_API);
-
-  if (Platform.OS === "android") {
-    urls.add("http://10.0.2.2:8000/api/");
-  }
 
   return Array.from(urls).map(normalizeApiBaseUrl);
 }

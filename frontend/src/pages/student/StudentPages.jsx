@@ -503,9 +503,15 @@ export function StudentDashboard() {
                   {a.is_important && <StudentBadge text="Important" variant="danger" style={{ marginLeft: 8 }} />}
                 </div>
                 <p style={{ color: T.slate, fontSize: 13, margin: 0 }}>{a.message}</p>
-                <div style={{ fontSize: 11, color: T.slateLight, marginTop: 8 }}>
-                  <i className="far fa-calendar-alt" style={{ marginRight: 6 }} />
-                  {new Date(a.created_at).toLocaleDateString('en-IN')}
+                <div style={{ fontSize: 11, color: T.slateLight, marginTop: 8, display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
+                  <span>
+                    <i className="fas fa-user-circle" style={{ marginRight: 6 }} />
+                    {a.source === 'trainer' ? 'Mentor' : a.source === 'counselor' ? 'Counsellor' : 'Admin'}
+                  </span>
+                  <span>
+                    <i className="far fa-calendar-alt" style={{ marginRight: 6 }} />
+                    {new Date(a.created_at).toLocaleDateString('en-IN')}
+                  </span>
                 </div>
               </div>
             ))}
@@ -517,6 +523,125 @@ export function StudentDashboard() {
 }
 
 // ── STUDENT ATTENDANCE ─────────────────────────────────────────────────────
+export function StudentAnnouncements() {
+  const [announcements, setAnnouncements] = useState([])
+  const [activeSource, setActiveSource] = useState('counselor')
+  const [search, setSearch] = useState('')
+  const [loading, setLoading] = useState(true)
+  const [viewModal, setViewModal] = useState(null)
+
+  useEffect(() => {
+    api.get('/student/announcements/?sources=admin,counselor,trainer')
+      .then(r => {
+        const data = r.data || {}
+        const items = data.results || [
+          ...(data.admin || []),
+          ...(data.counselor || []),
+          ...(data.trainer || []),
+        ]
+        setAnnouncements((Array.isArray(items) ? items : []).filter(item => ['admin', 'counselor', 'trainer'].includes(item.source)))
+      })
+      .catch(() => toast.error('Failed to load announcements'))
+      .finally(() => setLoading(false))
+  }, [])
+
+  const sources = [
+    { key: 'admin', label: 'Admin Announcement', icon: 'fa-user-shield' },
+    { key: 'counselor', label: 'Counsellor Announcement', icon: 'fa-user-tie' },
+    { key: 'trainer', label: 'Mentor Announcement', icon: 'fa-chalkboard-teacher' },
+  ]
+  const counts = sources.reduce((acc, source) => {
+    acc[source.key] = announcements.filter(item => item.source === source.key).length
+    return acc
+  }, {})
+  const filtered = announcements
+    .filter(item => item.source === activeSource)
+    .filter(item => `${item.title} ${item.message} ${item.announcement_type} ${item.source_label} ${item.audience_label}`.toLowerCase().includes(search.toLowerCase()))
+
+  const TYPE_META = {
+    important: { bg: '#fdeaec', color: T.rose, label: 'Important', icon: 'fa-exclamation-triangle' },
+    holiday: { bg: '#fef5e4', color: T.amber, label: 'Holiday', icon: 'fa-umbrella-beach' },
+    event: { bg: '#e8f8f0', color: T.sage, label: 'Event', icon: 'fa-calendar-star' },
+    update: { bg: '#e4f2fd', color: T.teal, label: 'Update', icon: 'fa-sync-alt' },
+    general: { bg: '#f0f3f7', color: T.slate, label: 'General', icon: 'fa-bullhorn' },
+    exam: { bg: '#e4f2fd', color: T.navy, label: 'Exam', icon: 'fa-file-alt' },
+    course: { bg: '#e8f8f0', color: T.sage, label: 'Course', icon: 'fa-book-open' },
+  }
+  const TypeBadge = ({ type }) => {
+    const m = TYPE_META[type] || TYPE_META.general
+    return <span style={{ background: m.bg, color: m.color, padding: '4px 11px', borderRadius: 20, fontSize: 11, fontWeight: 600, display: 'inline-flex', alignItems: 'center', gap: 5 }}><i className={`fas ${m.icon}`} />{m.label}</span>
+  }
+
+  return (
+    <div className="student-root">
+      <StudentStyles />
+      <StudentPageHeader title="Announcements" sub="Admin, counsellor, and mentor updates" />
+
+      <div className="student-card" style={{ padding: 16 }}>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 14 }}>
+          {sources.map(source => {
+            const active = activeSource === source.key
+            return (
+              <button
+                key={source.key}
+                className={`student-btn ${active ? 'student-btn-primary' : 'student-btn-ghost'}`}
+                onClick={() => setActiveSource(source.key)}
+                style={{ flex: '1 1 150px', justifyContent: 'center' }}
+              >
+                <i className={`fas ${source.icon}`} /> {source.label}
+                <span style={{ background: active ? 'rgba(15,27,45,.18)' : '#f0f3f7', color: active ? T.navy : T.slate, padding: '2px 8px', borderRadius: 999, fontSize: 11 }}>{counts[source.key] || 0}</span>
+              </button>
+            )
+          })}
+        </div>
+        <input className="student-input" value={search} onChange={e => setSearch(e.target.value)} placeholder="Search announcements" />
+      </div>
+
+      <div className="student-card">
+        <StudentSectionHeader title={`${sources.find(s => s.key === activeSource)?.label} Announcements`} count={filtered.length} />
+        {loading ? <StudentSpin /> : filtered.length === 0 ? (
+          <StudentEmpty msg="No announcements found." icon="fa-bullhorn" />
+        ) : (
+          <div style={{ padding: 18, display: 'grid', gap: 12 }}>
+            {filtered.map(item => (
+              <div key={item.id} style={{ border: `1px solid ${T.border}`, borderRadius: 12, padding: 16, background: '#fff' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap', marginBottom: 10 }}>
+                  <div>
+                    <div style={{ fontWeight: 700, fontSize: 15, color: T.navy }}>{item.title}</div>
+                    <div style={{ color: T.slate, fontSize: 12, marginTop: 4 }}>
+                {item.source === 'trainer' ? 'Mentor' : item.source === 'admin' ? 'Admin' : 'Counsellor'}
+                {item.audience_label ? ` - ${item.audience_label}` : ''}
+                    </div>
+                  </div>
+                  <TypeBadge type={item.announcement_type} />
+                </div>
+                <p style={{ margin: '0 0 12px', color: T.navyMid, lineHeight: 1.65, whiteSpace: 'pre-wrap' }}>{item.message}</p>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap' }}>
+                  <span style={{ color: T.slate, fontSize: 12 }}><i className="far fa-calendar-alt" style={{ marginRight: 6 }} />{item.created_at ? new Date(item.created_at).toLocaleString('en-IN') : ''}</span>
+                  <button className="student-btn student-btn-sm student-btn-ghost" onClick={() => setViewModal(item)}><i className="fas fa-eye" /> View</button>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      <StudentModal open={!!viewModal} onClose={() => setViewModal(null)} title="Announcement Details" size="md">
+        {viewModal && (
+          <div>
+            <div style={{ display: 'flex', gap: 10, marginBottom: 14, flexWrap: 'wrap' }}>
+              <TypeBadge type={viewModal.announcement_type} />
+              <span style={{ color: T.slate, fontSize: 12 }}>{viewModal.source === 'trainer' ? 'Mentor' : viewModal.source === 'admin' ? 'Admin' : 'Counsellor'}{viewModal.audience_label ? ` - ${viewModal.audience_label}` : ''}</span>
+            </div>
+            <h4 style={{ margin: '0 0 10px', color: T.navy }}>{viewModal.title}</h4>
+            <div style={{ background: '#f8fafc', borderRadius: 10, padding: 16, whiteSpace: 'pre-wrap', lineHeight: 1.7 }}>{viewModal.message}</div>
+          </div>
+        )}
+      </StudentModal>
+    </div>
+  )
+}
+
 export function StudentAttendance() {
   const [records, setRecords] = useState([])
   const [loading, setLoading] = useState(true)
@@ -600,7 +725,18 @@ export function StudentSessions() {
     try {
       await api.post('/sessions/student-complete/', { session_id: session.id })
       toast.success('Session marked as completed!')
-      load()
+      setSessions(prev => prev.map(item =>
+        item.id === session.id
+          ? {
+              ...item,
+              student_status: 'completed',
+              staff_completed: true,
+              has_response: false,
+              completed_date: item.completed_date || new Date().toISOString(),
+              student_confirmed_at: new Date().toISOString(),
+            }
+          : item
+      ))
     } catch (err) {
       toast.error(err.response?.data?.error || 'Failed to mark completed')
     } finally { setActionLoading(null) }
@@ -612,9 +748,18 @@ export function StudentSessions() {
     try {
       await api.post('/sessions/student-doubt/', { session_id: doubtModal.id, doubt_text: doubtText })
       toast.success('Doubt raised! Your trainer has been notified.')
+      setSessions(prev => prev.map(item =>
+        item.id === doubtModal.id
+          ? {
+              ...item,
+              student_status: 'doubt',
+              has_response: false,
+              doubt_response: null,
+            }
+          : item
+      ))
       setDoubtModal(null)
       setDoubtText('')
-      load()
     } catch (err) {
       toast.error(err.response?.data?.error || 'Failed to raise doubt')
     } finally { setSubmitting(false) }
@@ -1361,6 +1506,25 @@ export function StudentQuizList() {
   const [completedQuizzes, setCompletedQuizzes] = useState([])
   const [loading, setLoading] = useState(true)
   const [activeQuiz, setActiveQuiz] = useState(null)
+  const [review, setReview] = useState(null)
+  const [reviewLoading, setReviewLoading] = useState(false)
+
+  const loadReview = async (attemptId) => {
+    if (!attemptId) {
+      toast.error('Result details not available')
+      return
+    }
+
+    setReviewLoading(true)
+    try {
+      const response = await api.get(`/quiz/result/${attemptId}/`)
+      setReview(response.data)
+    } catch (err) {
+      toast.error(err.response?.data?.error || 'Failed to load quiz review')
+    } finally {
+      setReviewLoading(false)
+    }
+  }
 
   const loadQuizzes = async () => {
     setLoading(true)
@@ -1417,7 +1581,7 @@ export function StudentQuizList() {
               <StudentSectionHeader title="📊 Completed Quizzes History" count={completedQuizzes.length} />
               <div style={{ overflowX: 'auto' }}>
                 <table className="student-table">
-                  <thead><tr><th>Quiz Name</th><th>Questions</th><th>Best Score</th><th>Attempts</th><th>Max Attempts</th><th>Status</th></tr></thead>
+                  <thead><tr><th>Quiz Name</th><th>Questions</th><th>Best Score</th><th>Attempts</th><th>Max Attempts</th><th>Status</th><th>Review</th></tr></thead>
                   <tbody>
                     {completedQuizzes.map(quiz => (
                       <tr key={quiz.id}>
@@ -1427,6 +1591,11 @@ export function StudentQuizList() {
                         <td>{quiz.user_attempts}</td>
                         <td>{quiz.max_attempts || '∞'}</td>
                         <td><StudentBadge text="Completed" variant="success" /></td>
+                        <td>
+                          <button className="student-btn student-btn-sm student-btn-primary" onClick={() => loadReview(quiz.last_attempt_id)} disabled={reviewLoading}>
+                            View
+                          </button>
+                        </td>
                       </tr>
                     ))}
                   </tbody>
@@ -1434,8 +1603,43 @@ export function StudentQuizList() {
               </div>
             </div>
           )}
+          {review && <QuizReviewPanel review={review} onClose={() => setReview(null)} />}
         </>
       )}
+    </div>
+  )
+}
+
+function QuizReviewPanel({ review, onClose }) {
+  const questions = review.questions || []
+
+  return (
+    <div className="student-card" style={{ marginTop: 20 }}>
+      <div className="student-card-header">
+        <div>
+          <h5>{review.quiz_title || 'Quiz Review'}</h5>
+          <div style={{ color: T.slate, fontSize: 12, marginTop: 4 }}>
+            Score {review.score || 0}/{review.total_marks || 0} | {Number(review.percentage || 0).toFixed(1)}%
+          </div>
+        </div>
+        <button className="student-btn student-btn-sm student-btn-ghost" onClick={onClose}>Close</button>
+      </div>
+      <div style={{ padding: 20, display: 'grid', gap: 14 }}>
+        {questions.map((q, index) => (
+          <div key={q.question_id || index} style={{ border: `1px solid ${q.is_correct ? 'rgba(76,175,129,.28)' : 'rgba(232,72,85,.28)'}`, borderRadius: 12, padding: 16, background: q.is_correct ? 'rgba(76,175,129,.06)' : 'rgba(232,72,85,.06)' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap', marginBottom: 10 }}>
+              <strong>Q{q.question_number || index + 1}. {q.question_text}</strong>
+              <StudentBadge text={q.is_correct ? 'Correct' : 'Wrong'} variant={q.is_correct ? 'success' : 'danger'} />
+            </div>
+            <div style={{ display: 'grid', gap: 8, fontSize: 13 }}>
+              <div><strong>Your answer:</strong> {q.selected_answer} - {q.selected_option_text}</div>
+              <div><strong>Correct answer:</strong> {q.correct_answer} - {q.correct_option_text}</div>
+              <div><strong>Marks:</strong> {q.marks_obtained || 0}/{q.marks || 0}</div>
+              {q.explanation && <div><strong>Explanation:</strong> {q.explanation}</div>}
+            </div>
+          </div>
+        ))}
+      </div>
     </div>
   )
 }
@@ -1499,7 +1703,7 @@ function TakeQuiz({ quiz, onDone }) {
       <div className="student-root">
         <StudentStyles />
         <StudentPageHeader title={`Quiz Result: ${quiz.title}`} btn={<button className="student-btn student-btn-ghost" onClick={onDone}>Back to Quizzes</button>} />
-        <div className="student-card" style={{ maxWidth: 500, margin: '0 auto', textAlign: 'center' }}>
+        <div className="student-card" style={{ maxWidth: 500, margin: '0 auto 20px', textAlign: 'center' }}>
           <div style={{ padding: 32 }}>
             <div style={{ fontSize: 64, marginBottom: 20 }}>{passed ? '🎉' : '😔'}</div>
             <h3 style={{ color: passed ? T.sage : T.rose }}>{passed ? 'Congratulations!' : 'Better Luck Next Time'}</h3>
@@ -1509,6 +1713,7 @@ function TakeQuiz({ quiz, onDone }) {
             <button className="student-btn student-btn-primary" onClick={onDone}>Back to Quizzes</button>
           </div>
         </div>
+        <QuizReviewPanel review={result} onClose={onDone} />
       </div>
     )
   }

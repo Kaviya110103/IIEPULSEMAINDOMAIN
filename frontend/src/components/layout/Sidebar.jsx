@@ -149,6 +149,7 @@ function AdminNav() {
       <NavGroup icon="fa-user-clock" label="User Monitoring">
         <SubLink to="/admin/monitoring/employees" label="Employee Monitoring" />
         <SubLink to="/admin/monitoring/students" label="Student Monitoring" />
+        <SubLink to="/admin/employee-tracking" label="Employee Tracking" />
       </NavGroup>
       <NavItem to="/admin/gallery" icon="fa-images" label="Gallery" />
       <NavItem to="/admin/vlogs" icon="fa-video" label="Vlogs" />
@@ -170,6 +171,8 @@ function CounselorNav() {
       <NavItem to="/counselor" icon="fa-home" label="Dashboard" />
       <SectionLabel label="Components" />
       <NavGroup icon="fa-plus-square" label="Add">
+        <SubLink to="/counselor/course-types" label="Course Types" />
+        <SubLink to="/counselor/courses/add" label="Add Course" />
         <SubLink to="/counselor/add-batch" label="Add Batch" />
         <SubLink to="/counselor/add-student" label="Add Student" />
       </NavGroup>
@@ -221,6 +224,7 @@ function EmployeeNav() {
         <SubLink to="/employee/batches" label="View Batches" />
       </NavGroup>
       <NavItem to="/employee/doubts" icon="fa-question-circle" label="Student Doubts" />
+      <NavItem to="/employee/trainer-announcements" icon="fa-paper-plane" label="My Announcements" />
       <NavItem to="/employee/announcements" icon="fa-bullhorn" label="Admin Announcements" />
       <NavItem to="/employee/branch-announcements" icon="fa-map-marker-alt" label="Branch Announcements" />
       <NavItem to="/employee/monitoring/students" icon="fa-user-clock" label="Student Login Records" />
@@ -261,8 +265,7 @@ function StudentNav() {
     <>
       <NavItem to="/student" icon="fa-home" label="Dashboard" />
       <SectionLabel label="My Learning" />
-      <NavItem to="/student/announcements" icon="fa-bullhorn" label="Admin Announcements" />
-      <NavItem to="/student/branch-announcements" icon="fa-map-marker-alt" label="Branch Announcements" />
+      <NavItem to="/student/announcements" icon="fa-bullhorn" label="Announcements" />
       <NavItem to="/student/attendance" icon="fa-user-check" label="Attendance" />
       <NavItem to="/student/sessions" icon="fa-book-open" label="My Sessions" />
       <NavGroup icon="fa-flask" label="Tests & Quizzes">

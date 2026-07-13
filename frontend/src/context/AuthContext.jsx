@@ -1,5 +1,5 @@
 import { createContext, useContext, useState, useEffect } from 'react'
-import api, { logoutSession, resetInactivityTimer } from '../api/client'
+import api, { getApiErrorMessage, logoutSession, resetInactivityTimer } from '../api/client'
 
 const AuthContext = createContext(null)
 
@@ -77,7 +77,7 @@ export function AuthProvider({ children }) {
       resetInactivityTimer()
       return { success: true, data: userData }
     } catch (err) {
-      return { success: false, error: err.response?.data?.error || 'Login failed' }
+      return { success: false, error: getApiErrorMessage(err, 'Login failed') }
     } finally {
       setLoading(false)
     }
