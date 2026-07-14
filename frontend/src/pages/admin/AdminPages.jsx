@@ -1069,7 +1069,7 @@ export function AdminEmployeeTracking() {
                 <div style={{ textAlign: 'right', color: '#0f172a', fontWeight: 900 }}>{item.activity_score}%</div>
               </div>
               <div style={{ marginTop: 15 }}>
-                <TrackBar label="Session completion" value={item.session_completion_percentage} color="#059669" />
+                <TrackBar label={item.tracking_type === 'counselor' ? 'Counsellor activity' : 'Session completion'} value={item.tracking_type === 'counselor' ? item.activity_score : item.session_completion_percentage} color="#059669" />
                 <TrackBar label="Activity score" value={item.activity_score} color="#2563eb" />
               </div>
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 8, marginTop: 10 }}>
@@ -1086,6 +1086,7 @@ export function AdminEmployeeTracking() {
   const staff = data.staff || {}
   const staffInfo = staff.staff || {}
   const staffName = `${staffInfo.first_name || ''} ${staffInfo.last_name || ''}`.trim() || 'Staff'
+  const isCounselorTracking = staff.tracking_type === 'counselor' || String(staffInfo.designation || '').toLowerCase() === 'counselor'
   const reportFilename = `staff_activity_${staffName.replace(/[^a-zA-Z0-9]/g, '_')}.pdf`
   const handleDownloadStaffReport = async () => {
     setReportDownloading(true)
@@ -1132,7 +1133,7 @@ export function AdminEmployeeTracking() {
               <div style={{ marginTop: 6, color: 'rgba(255,255,255,.76)', fontSize: 13, fontWeight: 800 }}>{staffInfo.designation || 'Staff'} | {displayBranch(staffInfo.branch)} | Last login {fmtDateTime(staff.last_login)}</div>
               <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 12 }}>
                 <span style={{ border: '1px solid rgba(255,255,255,.18)', background: 'rgba(255,255,255,.1)', borderRadius: 999, padding: '6px 10px', fontSize: 11, fontWeight: 900 }}>{staff.student_count || 0} students handled</span>
-                <span style={{ border: '1px solid rgba(255,255,255,.18)', background: 'rgba(255,255,255,.1)', borderRadius: 999, padding: '6px 10px', fontSize: 11, fontWeight: 900 }}>{staff.batch_count || 0} batches</span>
+                <span style={{ border: '1px solid rgba(255,255,255,.18)', background: 'rgba(255,255,255,.1)', borderRadius: 999, padding: '6px 10px', fontSize: 11, fontWeight: 900 }}>{isCounselorTracking ? `${staff.assigned_students_count || 0} assigned` : `${staff.batch_count || 0} batches`}</span>
                 <span style={{ border: '1px solid rgba(255,255,255,.18)', background: 'rgba(255,255,255,.1)', borderRadius: 999, padding: '6px 10px', fontSize: 11, fontWeight: 900 }}>{staff.new_students_count || 0} new students</span>
               </div>
             </div>
@@ -1152,9 +1153,20 @@ export function AdminEmployeeTracking() {
         <AdminSectionHeader title="Performance Graph" />
         <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) 210px', gap: 18, alignItems: 'center' }}>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 12 }}>
-            <PerformanceMetricRow label="Materials Upload" count={staff.materials_uploaded} value={data.charts?.material_upload} icon="fa-cloud-arrow-up" color="#0891b2" />
-            <PerformanceMetricRow label="Quiz Upload" count={staff.quizzes_created} value={data.charts?.quiz_upload} icon="fa-circle-question" color="#7c3aed" />
-            <PerformanceMetricRow label="Batch Completion" count={`${staff.completed_batch_count || 0}/${staff.batch_count || 0} batches`} value={data.charts?.batch_completion} icon="fa-layer-group" color="#059669" />
+            {isCounselorTracking ? (
+              <>
+                <PerformanceMetricRow label="Students Added" count={staff.month_students_added || 0} value={data.charts?.students_added} icon="fa-user-plus" color="#0891b2" />
+                <PerformanceMetricRow label="Batches Added" count={staff.month_batches_added || 0} value={data.charts?.batches_added} icon="fa-layer-group" color="#7c3aed" />
+                <PerformanceMetricRow label="Students Assigned" count={staff.month_students_assigned || 0} value={data.charts?.students_assigned} icon="fa-user-check" color="#059669" />
+                <PerformanceMetricRow label="Fee Managed" count={staff.month_fee_managed || 0} value={data.charts?.fee_management} icon="fa-rupee-sign" color="#dc2626" />
+              </>
+            ) : (
+              <>
+                <PerformanceMetricRow label="Materials Upload" count={staff.materials_uploaded} value={data.charts?.material_upload} icon="fa-cloud-arrow-up" color="#0891b2" />
+                <PerformanceMetricRow label="Quiz Upload" count={staff.quizzes_created} value={data.charts?.quiz_upload} icon="fa-circle-question" color="#7c3aed" />
+                <PerformanceMetricRow label="Batch Completion" count={`${staff.completed_batch_count || 0}/${staff.batch_count || 0} batches`} value={data.charts?.batch_completion} icon="fa-layer-group" color="#059669" />
+              </>
+            )}
             <PerformanceMetricRow
               label="Login Usage"
               count={`${staff.login_usage_count ?? 0}/${staff.login_usage_target || 7} logins`}
@@ -1179,7 +1191,69 @@ export function AdminEmployeeTracking() {
       </div>
 
       <div className="admin-card" style={{ marginTop: 18, padding: 18 }}>
-        <AdminSectionHeader title="Batch-wise Session and Student Attendance Progress" count={(data.batch_details || []).length} />
+        <AdminSectionHeader title={isCounselorTracking ? "Counsellor Branch Operations" : "Batch-wise Session and Student Attendance Progress"} count={isCounselorTracking ? (data.highlights?.last_month_students_count || data.last_month_added_students?.length || 0) : (data.batch_details || []).length} />
+        {isCounselorTracking ? (
+          <div style={{ display: 'grid', gap: 16 }}>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(170px, 1fr))', gap: 12 }}>
+              <TrackingMiniStat label="Last Month Added Students" value={data.highlights?.last_month_students_count || data.last_month_added_students?.length || 0} icon="fa-user-plus" color="#0891b2" />
+              <TrackingMiniStat label="Assigned Students" value={staff.month_students_assigned || 0} icon="fa-user-check" color="#059669" />
+              <TrackingMiniStat label="Fee Managed" value={staff.month_fee_managed || 0} icon="fa-rupee-sign" color="#dc2626" />
+              <TrackingMiniStat label="Login History" value={(data.login_records || []).length} icon="fa-right-to-bracket" color="#ca8a04" />
+            </div>
+            <div style={{ border: '1px solid #e2e8f0', borderRadius: 12, overflow: 'hidden', background: '#fff' }}>
+              <div style={{ padding: '13px 14px', borderBottom: '1px solid #e2e8f0', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12 }}>
+                <div>
+                  <div style={{ fontSize: 15, fontWeight: 900, color: T.ink }}>Last Month Added Students</div>
+                  <div style={{ fontSize: 11, fontWeight: 800, color: T.slate }}>Students created under this branch</div>
+                </div>
+                <AdminBadge text={`${data.highlights?.last_month_students_count || data.last_month_added_students?.length || 0} students`} variant="info" />
+              </div>
+              <div style={{ overflowX: 'auto' }}>
+                <table className="admin-table">
+                  <thead><tr><th>Student</th><th>Batch</th><th>Assigned Staff</th><th>Created</th></tr></thead>
+                  <tbody>
+                    {(data.last_month_added_students || []).map(student => (
+                      <tr key={student.id}>
+                        <td>
+                          <strong>{student.name || '-'}</strong>
+                          <div style={{ color: T.slate, fontSize: 11 }}>{student.student_id || '-'} | {student.mobile_no || '-'}</div>
+                        </td>
+                        <td>{student.batch || '-'}</td>
+                        <td>{student.assigned_staff || '-'}</td>
+                        <td>{fmtDateOnly(student.created_at)}</td>
+                      </tr>
+                    ))}
+                    {(data.last_month_added_students || []).length === 0 && <tr><td colSpan="4"><AdminEmpty msg="No students added in the last month" icon="fa-user-plus" /></td></tr>}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+            <div style={{ border: '1px solid #e2e8f0', borderRadius: 12, overflow: 'hidden', background: '#fff' }}>
+              <div style={{ padding: '13px 14px', borderBottom: '1px solid #e2e8f0', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12 }}>
+                <div>
+                  <div style={{ fontSize: 15, fontWeight: 900, color: T.ink }}>Login History</div>
+                  <div style={{ fontSize: 11, fontWeight: 800, color: T.slate }}>Recent counsellor login activity</div>
+                </div>
+                <AdminBadge text={`${(data.login_records || []).length} records`} variant="warning" />
+              </div>
+              <div style={{ overflowX: 'auto' }}>
+                <table className="admin-table">
+                  <thead><tr><th>Login</th><th>Logout</th><th>Last Seen</th></tr></thead>
+                  <tbody>
+                    {(data.login_records || []).map((item, idx) => (
+                      <tr key={idx}>
+                        <td>{fmtDateTime(item.login_time)}</td>
+                        <td>{item.logout_time ? fmtDateTime(item.logout_time) : 'Still active'}</td>
+                        <td>{fmtDateTime(item.last_seen)}</td>
+                      </tr>
+                    ))}
+                    {(data.login_records || []).length === 0 && <tr><td colSpan="3"><AdminEmpty msg="No login history found" icon="fa-right-to-bracket" /></td></tr>}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        ) : (
         <div style={{ display: 'grid', gap: 14 }}>
           {(data.batch_details || []).map(batch => (
             <div key={batch.id} style={{ border: '1px solid #e2e8f0', borderRadius: 12, padding: 14, background: batch.is_new ? '#f0fdf4' : '#fff' }}>
@@ -1195,20 +1269,30 @@ export function AdminEmployeeTracking() {
                   <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
                     <AdminBadge text={`${batch.student_count} students`} variant="info" />
                     <AdminBadge text={`${batch.new_student_count || 0} new`} variant="success" />
-                    <AdminBadge text={`${batch.content_upload_total || 0} uploads`} variant="teal" />
-                    <AdminBadge text={`${batch.sessions_completed || 0}/${batch.total_sessions || 0} sessions done`} variant="warning" />
+                    {isCounselorTracking ? (
+                      <AdminBadge text={`${batch.trainer || 'No trainer'}`} variant="teal" />
+                    ) : (
+                      <>
+                        <AdminBadge text={`${batch.content_upload_total || 0} uploads`} variant="teal" />
+                        <AdminBadge text={`${batch.sessions_completed || 0}/${batch.total_sessions || 0} sessions done`} variant="warning" />
+                      </>
+                    )}
                   </div>
-                  <TrackingDonut value={batch.session_percentage} color="#059669" size={88} label="Sessions" />
+                  {!isCounselorTracking && <TrackingDonut value={batch.session_percentage} color="#059669" size={88} label="Sessions" />}
                 </div>
               </div>
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(155px, 1fr))', gap: 10, marginTop: 14 }}>
-                <TrackingMiniStat label="Materials Uploaded" value={batch.materials_uploaded} icon="fa-cloud-arrow-up" color="#0891b2" />
-                <TrackingMiniStat label="Quizzes Uploaded" value={batch.quizzes_uploaded} icon="fa-circle-question" color="#7c3aed" />
-              </div>
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 14, marginTop: 13 }}>
-                <TrackBar label={`Batch session progress (${batch.sessions_completed}/${batch.total_sessions})`} value={batch.session_percentage} color="#059669" />
-                <TrackBar label={`Batch attendance progress (${batch.attendance_present}/${batch.attendance_total})`} value={batch.attendance_percentage} color="#2563eb" />
-              </div>
+              {!isCounselorTracking && (
+                <>
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(155px, 1fr))', gap: 10, marginTop: 14 }}>
+                    <TrackingMiniStat label="Materials Uploaded" value={batch.materials_uploaded} icon="fa-cloud-arrow-up" color="#0891b2" />
+                    <TrackingMiniStat label="Quizzes Uploaded" value={batch.quizzes_uploaded} icon="fa-circle-question" color="#7c3aed" />
+                  </div>
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 14, marginTop: 13 }}>
+                    <TrackBar label={`Batch session progress (${batch.sessions_completed}/${batch.total_sessions})`} value={batch.session_percentage} color="#059669" />
+                    <TrackBar label={`Batch attendance progress (${batch.attendance_present}/${batch.attendance_total})`} value={batch.attendance_percentage} color="#2563eb" />
+                  </div>
+                </>
+              )}
               {(batch.recent_uploads || []).length > 0 && (
                 <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 4, marginBottom: 8 }}>
                   {(batch.recent_uploads || []).slice(0, 6).map((item, idx) => (
@@ -1244,6 +1328,7 @@ export function AdminEmployeeTracking() {
           ))}
           {(data.batch_details || []).length === 0 && <AdminEmpty msg="No batches handled by this staff" icon="fa-layer-group" />}
         </div>
+        )}
       </div>
 
       <AdminModal open={loginModalOpen} onClose={() => setLoginModalOpen(false)} title={`${staffInfo.first_name || ''} ${staffInfo.last_name || ''} - Weekly Login`} size="lg">
@@ -3325,6 +3410,18 @@ export function CompletedStudents() {
   const [downloadingPdf, setDownloadingPdf] = useState(false)
   const [currentPage, setCurrentPage] = useState(1)
   const itemsPerPage = 10
+  const normalizeFilterValue = (value) => String(value || '').trim().replace(/\s+/g, ' ').toLowerCase()
+  const cleanFilterLabel = (value) => String(value || '').trim().replace(/\s+/g, ' ')
+  const makeUniqueOptions = (items, getter) => {
+    const options = new Map()
+    items.forEach(item => {
+      const label = cleanFilterLabel(getter(item))
+      const key = normalizeFilterValue(label)
+      if (key && !options.has(key)) options.set(key, label)
+    })
+    return Array.from(options.values()).sort((a, b) => a.localeCompare(b))
+  }
+  const sameFilterValue = (left, right) => normalizeFilterValue(left) === normalizeFilterValue(right)
 
   // Filter states
   const [filters, setFilters] = useState({
@@ -3394,10 +3491,18 @@ export function CompletedStudents() {
       // Fetch attendance and test scores for each student
       const studentsWithData = await Promise.all(
         data.map(async (student) => {
-          const [attendance, avgScore] = await Promise.all([
-            fetchStudentAttendance(student.id),
-            fetchStudentTestScores(student.id)
-          ])
+          const originalStudentPk = /^\d+$/.test(String(student.original_student_id || ''))
+            ? student.original_student_id
+            : null
+          const hasStoredAttendance = student.attendance_percentage != null && Number(student.attendance_percentage) > 0
+          const attendance = hasStoredAttendance || !originalStudentPk
+            ? {
+                attendance_percentage: Math.round(Number(student.attendance_percentage || 0)),
+                present_count: student.present_count || 0,
+                total_attendance: student.total_attendance || 0,
+              }
+            : await fetchStudentAttendance(originalStudentPk)
+          const avgScore = Math.round(Number(student.average_test_score || 0))
 
           return {
             ...student,
@@ -3411,9 +3516,9 @@ export function CompletedStudents() {
 
       setStudents(studentsWithData)
 
-      const uniqueBranches = [...new Set(studentsWithData.map(s => s.branch).filter(Boolean))]
-      const uniqueBatches = [...new Set(studentsWithData.map(s => s.batch_number).filter(Boolean))]
-      const uniqueCourses = [...new Set(studentsWithData.map(s => s.course_name || s.course).filter(Boolean))]
+      const uniqueBranches = makeUniqueOptions(studentsWithData, s => s.branch)
+      const uniqueBatches = makeUniqueOptions(studentsWithData, s => s.batch_number)
+      const uniqueCourses = makeUniqueOptions(studentsWithData, s => s.course_name || s.course)
 
       setBranches(uniqueBranches)
       setBatches(uniqueBatches)
@@ -3440,13 +3545,13 @@ export function CompletedStudents() {
     let filtered = [...data]
 
     if (currentFilters.branch) {
-      filtered = filtered.filter(s => s.branch === currentFilters.branch)
+      filtered = filtered.filter(s => sameFilterValue(s.branch, currentFilters.branch))
     }
     if (currentFilters.batch) {
-      filtered = filtered.filter(s => s.batch_number === currentFilters.batch)
+      filtered = filtered.filter(s => sameFilterValue(s.batch_number, currentFilters.batch))
     }
     if (currentFilters.course) {
-      filtered = filtered.filter(s => (s.course_name || s.course) === currentFilters.course)
+      filtered = filtered.filter(s => sameFilterValue(s.course_name || s.course, currentFilters.course))
     }
     if (currentFilters.dateFrom) {
       filtered = filtered.filter(s => new Date(s.completion_date) >= new Date(currentFilters.dateFrom))
@@ -3494,7 +3599,13 @@ export function CompletedStudents() {
   const downloadCompletedStudentsPdf = async () => {
     setDownloadingPdf(true)
     try {
-      await downloadPdf('/completed-students/report/', filters, 'completed_students_report.pdf')
+      await downloadPdf('/completed-students/report/', {
+        ...filters,
+        branch: cleanFilterLabel(filters.branch),
+        batch: cleanFilterLabel(filters.batch),
+        course: cleanFilterLabel(filters.course),
+        search: cleanFilterLabel(filters.search),
+      }, 'completed_students_report.pdf')
       toast.success('Completed students PDF downloaded')
     } catch (err) {
       console.error('Completed students PDF error:', err)

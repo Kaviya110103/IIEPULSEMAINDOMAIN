@@ -5,7 +5,7 @@ const parseAllowedHosts = () => {
   const hosts = process.env.VITE_ALLOWED_HOSTS
   return hosts
     ? hosts.split(',').map(host => host.trim()).filter(Boolean)
-    : ['localhost', '127.0.0.1', 'testiie.indrainstitute.com']
+    : ['testiie.indrainstitute.com']
 }
 
 const productionBackend = 'https://testiie.indrainstitute.com'

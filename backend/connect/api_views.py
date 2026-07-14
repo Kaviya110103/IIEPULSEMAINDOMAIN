@@ -8,6 +8,7 @@ from django.contrib.auth import authenticate
 from django.contrib.auth.hashers import check_password, make_password
 from django.contrib.auth.models import User
 from django.db.models import Q, Count
+from django.db.models.functions import Lower, Trim
 from django.db import DatabaseError, IntegrityError, OperationalError
 from django.utils import timezone
 from django.utils.dateparse import parse_date
@@ -571,23 +572,34 @@ class AdminDashboardView(APIView):
         ).values('branch').annotate(
             count=Count('id')
         ).order_by('branch')
-        completed_branch_counts = CompletedStudent.objects.exclude(
-            branch__isnull=True
-        ).exclude(
-            branch=''
-        ).values('branch').annotate(
-            count=Count('id')
-        ).order_by('branch')
         def canonical_branch(value):
-            value = (value or '').strip()
+            value = re.sub(r'\s+', ' ', value or '').strip().lower()
             if value == 'kunniyamuthur':
                 return 'kuniyamuthur'
             return value
 
         def branch_values(branch):
+            if branch == '100ft':
+                return ['100ft', '100FT']
+            if branch == 'hopes':
+                return ['hopes', 'Hopes', 'HOPES']
             if branch == 'kuniyamuthur':
-                return ['kuniyamuthur', 'kunniyamuthur']
+                return ['kuniyamuthur', 'Kuniyamuthur', 'KUNIYAMUTHUR', 'kunniyamuthur', 'Kunniyamuthur', 'KUNNIYAMUTHUR']
             return [branch]
+
+        completed_students_qs = CompletedStudent.objects.filter(completion_type='full')
+        completed_counts_by_branch = {}
+        for item in completed_students_qs.exclude(branch__isnull=True).exclude(branch='').values('branch').annotate(count=Count('id')):
+            key = canonical_branch(item['branch'])
+            if key:
+                completed_counts_by_branch[key] = completed_counts_by_branch.get(key, 0) + item['count']
+        completed_branch_counts = [
+            {'branch': branch, 'count': count}
+            for branch, count in sorted(
+                completed_counts_by_branch.items(),
+                key=lambda item: (['100ft', 'hopes', 'kuniyamuthur'].index(item[0]) if item[0] in ['100ft', 'hopes', 'kuniyamuthur'] else 3, item[0])
+            )
+        ]
 
         def clamp_percentage(value):
             return max(0, min(100, round(value)))
@@ -685,7 +697,7 @@ class AdminDashboardView(APIView):
             'mentor_count': Employee.objects.filter(designation__iexact='mentor').count(),
             'course_count': Courses.objects.count(),
             'batch_count': Batches.objects.count(),
-            'completed_count': CompletedStudent.objects.count(),
+            'completed_count': completed_students_qs.count(),
             'counselor_count': Employee.objects.filter(designation__iexact='counselor').count(),
             'trainer_count': Employee.objects.filter(designation__iexact='trainer').count(),
             'next_staff_id': generate_staff_id(),
@@ -3945,20 +3957,51 @@ class CompletedStudentListView(generics.ListAPIView):
     permission_classes = [IsAuthenticated]
 
     def get_queryset(self):
-        qs = super().get_queryset()
+        qs = super().get_queryset().filter(completion_type='full')
         user = self.request.user
+
+        normalize_param = lambda value: re.sub(r'\s+', ' ', value or '').strip().lower()
+        branch_param = normalize_param(self.request.query_params.get('branch', ''))
+        batch_param = normalize_param(self.request.query_params.get('batch', ''))
+        course_param = normalize_param(self.request.query_params.get('course', ''))
+        search_param = self.request.query_params.get('search', '').strip()
+        date_from = parse_date(self.request.query_params.get('dateFrom') or self.request.query_params.get('date_from') or '')
+        date_to = parse_date(self.request.query_params.get('dateTo') or self.request.query_params.get('date_to') or '')
+
+        if branch_param:
+            qs = qs.annotate(_branch_norm=Lower(Trim('branch'))).filter(_branch_norm=branch_param)
+        if batch_param:
+            qs = qs.annotate(_batch_norm=Lower(Trim('batch_number'))).filter(_batch_norm=batch_param)
+        if course_param:
+            qs = qs.annotate(
+                _course_name_norm=Lower(Trim('course_name')),
+                _course_norm=Lower(Trim('course')),
+            ).filter(Q(_course_name_norm=course_param) | Q(_course_norm=course_param))
+        if date_from:
+            qs = qs.filter(completion_date__date__gte=date_from)
+        if date_to:
+            qs = qs.filter(completion_date__date__lte=date_to)
+        if search_param:
+            qs = qs.filter(
+                Q(first_name__icontains=search_param) |
+                Q(last_name__icontains=search_param) |
+                Q(student_id__icontains=search_param) |
+                Q(course_name__icontains=search_param) |
+                Q(course__icontains=search_param) |
+                Q(batch_number__icontains=search_param) |
+                Q(branch__icontains=search_param) |
+                Q(faculty_name__icontains=search_param)
+            )
 
         if user.is_superuser or user.is_staff:
             return qs
 
-        branch_param = self.request.query_params.get('branch', '').strip()
-        if branch_param:
-            qs = qs.filter(branch__iexact=branch_param)
-
         emp = Employee.objects.filter(user=user).first()
         if emp and emp.designation.lower() == 'counselor':
             if emp.branch:
-                return qs.filter(branch__iexact=emp.branch)
+                return qs.annotate(_counselor_branch_norm=Lower(Trim('branch'))).filter(
+                    _counselor_branch_norm=normalize_param(emp.branch)
+                )
             return qs.none()
         if emp:
             batch_numbers = Batches.objects.filter(faculty=emp).values_list('batch_number', flat=True)
@@ -3992,20 +4035,24 @@ def completed_students_pdf(request):
     qs.request = request
     students_qs = qs.get_queryset()
 
-    branch = request.query_params.get('branch')
-    batch = request.query_params.get('batch')
-    course = request.query_params.get('course')
+    normalize_param = lambda value: re.sub(r'\s+', ' ', value or '').strip().lower()
+    branch = normalize_param(request.query_params.get('branch'))
+    batch = normalize_param(request.query_params.get('batch'))
+    course = normalize_param(request.query_params.get('course'))
     trainer = request.query_params.get('trainer')
     search = request.query_params.get('search')
     date_from = parse_date(request.query_params.get('dateFrom') or request.query_params.get('date_from') or '')
     date_to = parse_date(request.query_params.get('dateTo') or request.query_params.get('date_to') or '')
 
     if branch:
-        students_qs = students_qs.filter(branch__iexact=branch)
+        students_qs = students_qs.annotate(_pdf_branch_norm=Lower(Trim('branch'))).filter(_pdf_branch_norm=branch)
     if batch:
-        students_qs = students_qs.filter(batch_number__iexact=batch)
+        students_qs = students_qs.annotate(_pdf_batch_norm=Lower(Trim('batch_number'))).filter(_pdf_batch_norm=batch)
     if course:
-        students_qs = students_qs.filter(Q(course_name__iexact=course) | Q(course__iexact=course))
+        students_qs = students_qs.annotate(
+            _pdf_course_name_norm=Lower(Trim('course_name')),
+            _pdf_course_norm=Lower(Trim('course')),
+        ).filter(Q(_pdf_course_name_norm=course) | Q(_pdf_course_norm=course))
     if trainer:
         students_qs = students_qs.filter(Q(faculty_name__iexact=trainer) | Q(graduated_from_trainer__first_name__icontains=trainer) | Q(graduated_from_trainer__last_name__icontains=trainer))
     if date_from:
@@ -5082,6 +5129,69 @@ def _tracking_login_usage(staff):
     }
 
 
+def _is_counselor_staff(staff):
+    return (getattr(staff, 'designation', '') or '').strip().lower() == 'counselor'
+
+
+def _tracking_percent_of_target(value, target):
+    return round(min(100, (value / target * 100) if target else 0), 1)
+
+
+def _tracking_counselor_metrics(staff):
+    now = timezone.now()
+    week_since = now - timedelta(days=7)
+    month_since = now - timedelta(days=30)
+    branch_values = _tracking_branch_values(staff.branch)
+
+    branch_students = Students.objects.filter(branch__in=branch_values)
+    branch_batches = Batches.objects.filter(branch__in=branch_values)
+    assigned_students = branch_students.filter(Q(assigned_staff__isnull=False) | Q(assigned_batch__isnull=False))
+    fee_payments = FeePayment.objects.filter(student__branch__in=branch_values)
+    fee_transactions = FeeTransaction.objects.filter(
+        Q(collected_by=staff.user) | Q(fee_payment__student__branch__in=branch_values)
+    ).distinct()
+    login_usage = _tracking_login_usage(staff)
+
+    week_students_added = branch_students.filter(created_at__gte=week_since).count()
+    month_students_added = branch_students.filter(created_at__gte=month_since).count()
+    week_batches_added = branch_batches.filter(created_at__gte=week_since).count()
+    month_batches_added = branch_batches.filter(created_at__gte=month_since).count()
+    week_students_assigned = assigned_students.filter(updated_at__gte=week_since).count()
+    month_students_assigned = assigned_students.filter(updated_at__gte=month_since).count()
+    week_fee_managed = fee_transactions.filter(paid_at__gte=week_since).count()
+    month_fee_managed = fee_transactions.filter(paid_at__gte=month_since).count()
+
+    performance_graph = {
+        'students_added': _tracking_percent_of_target(month_students_added, 30),
+        'batches_added': _tracking_percent_of_target(month_batches_added, 6),
+        'students_assigned': _tracking_percent_of_target(month_students_assigned, 30),
+        'fee_management': _tracking_percent_of_target(month_fee_managed, 30),
+        'login_usage': login_usage['login_usage_percentage'],
+    }
+    activity_score = round(sum(performance_graph.values()) / len(performance_graph), 1)
+
+    return {
+        'branch_students': branch_students,
+        'branch_batches': branch_batches,
+        'assigned_students': assigned_students,
+        'fee_payments': fee_payments,
+        'fee_transactions': fee_transactions,
+        'login_usage': login_usage,
+        'week_since': week_since,
+        'month_since': month_since,
+        'week_students_added': week_students_added,
+        'month_students_added': month_students_added,
+        'week_batches_added': week_batches_added,
+        'month_batches_added': month_batches_added,
+        'week_students_assigned': week_students_assigned,
+        'month_students_assigned': month_students_assigned,
+        'week_fee_managed': week_fee_managed,
+        'month_fee_managed': month_fee_managed,
+        'performance_graph': performance_graph,
+        'activity_score': min(activity_score, 100),
+    }
+
+
 def _tracking_batch_completion(batch, staff, batch_students=None):
     sessions = list(CourseSession.objects.filter(batch=batch).order_by('session_number'))
     session_ids = [session.id for session in sessions]
@@ -5141,6 +5251,50 @@ def _tracking_batch_completion(batch, staff, batch_students=None):
 
 
 def _tracking_staff_card_summary(staff):
+    if _is_counselor_staff(staff):
+        metrics = _tracking_counselor_metrics(staff)
+        login_qs = UserActivity.objects.filter(employee=staff, user_type='employee').order_by('-login_time')
+        last_login = login_qs.first()
+        return {
+            'staff': EmployeeSerializer(staff).data,
+            'tracking_type': 'counselor',
+            'batch_count': metrics['branch_batches'].count(),
+            'student_count': metrics['branch_students'].count(),
+            'assigned_students_count': metrics['assigned_students'].count(),
+            'completed_students_count': CompletedStudent.objects.filter(branch__in=_tracking_branch_values(staff.branch), completion_type='full').count(),
+            'attendance_marked_count': 0,
+            'attendance_days_count': 0,
+            'sessions_completed': 0,
+            'total_sessions': 0,
+            'session_completion_percentage': 0,
+            'materials_uploaded': 0,
+            'materials_assigned': 0,
+            'material_batch_count': 0,
+            'tests_created': 0,
+            'tests_assigned': 0,
+            'quizzes_created': 0,
+            'quiz_attempts': 0,
+            'new_batches_count': metrics['month_batches_added'],
+            'new_students_count': metrics['month_students_added'],
+            'week_students_added': metrics['week_students_added'],
+            'month_students_added': metrics['month_students_added'],
+            'week_batches_added': metrics['week_batches_added'],
+            'month_batches_added': metrics['month_batches_added'],
+            'week_students_assigned': metrics['week_students_assigned'],
+            'month_students_assigned': metrics['month_students_assigned'],
+            'week_fee_managed': metrics['week_fee_managed'],
+            'month_fee_managed': metrics['month_fee_managed'],
+            'fee_records_count': metrics['fee_payments'].count(),
+            'fee_transactions_count': metrics['fee_transactions'].count(),
+            'login_count': login_qs.count(),
+            'login_usage_count': metrics['login_usage']['login_usage_count'],
+            'login_usage_target': metrics['login_usage']['login_usage_target'],
+            'last_login': last_login.login_time if last_login else None,
+            'last_seen': last_login.last_seen if last_login else None,
+            'performance_graph': metrics['performance_graph'],
+            'activity_score': metrics['activity_score'],
+        }
+
     batches = Batches.objects.filter(faculty=staff)
     batch_count = batches.count()
     students = Students.objects.filter(Q(assigned_staff=staff) | Q(assigned_batch__faculty=staff)).distinct()
@@ -5193,6 +5347,51 @@ def _tracking_staff_card_summary(staff):
 
 
 def _tracking_staff_summary(staff):
+    if _is_counselor_staff(staff):
+        metrics = _tracking_counselor_metrics(staff)
+        login_qs = UserActivity.objects.filter(employee=staff, user_type='employee').order_by('-login_time')
+        last_login = login_qs.first()
+        return {
+            'staff': EmployeeSerializer(staff).data,
+            'tracking_type': 'counselor',
+            'batch_count': metrics['branch_batches'].count(),
+            'completed_batch_count': 0,
+            'student_count': metrics['branch_students'].count(),
+            'assigned_students_count': metrics['assigned_students'].count(),
+            'completed_students_count': CompletedStudent.objects.filter(branch__in=_tracking_branch_values(staff.branch), completion_type='full').count(),
+            'attendance_marked_count': 0,
+            'attendance_days_count': 0,
+            'sessions_completed': 0,
+            'total_sessions': 0,
+            'session_completion_percentage': 0,
+            'materials_uploaded': 0,
+            'materials_assigned': 0,
+            'material_batch_count': 0,
+            'tests_created': 0,
+            'tests_assigned': 0,
+            'quizzes_created': 0,
+            'quiz_attempts': 0,
+            'new_batches_count': metrics['month_batches_added'],
+            'new_students_count': metrics['month_students_added'],
+            'week_students_added': metrics['week_students_added'],
+            'month_students_added': metrics['month_students_added'],
+            'week_batches_added': metrics['week_batches_added'],
+            'month_batches_added': metrics['month_batches_added'],
+            'week_students_assigned': metrics['week_students_assigned'],
+            'month_students_assigned': metrics['month_students_assigned'],
+            'week_fee_managed': metrics['week_fee_managed'],
+            'month_fee_managed': metrics['month_fee_managed'],
+            'fee_records_count': metrics['fee_payments'].count(),
+            'fee_transactions_count': metrics['fee_transactions'].count(),
+            'login_count': login_qs.count(),
+            'login_usage_count': metrics['login_usage']['login_usage_count'],
+            'login_usage_target': metrics['login_usage']['login_usage_target'],
+            'last_login': last_login.login_time if last_login else None,
+            'last_seen': last_login.last_seen if last_login else None,
+            'performance_graph': metrics['performance_graph'],
+            'activity_score': metrics['activity_score'],
+        }
+
     new_since = timezone.now() - timedelta(days=7)
     batches = Batches.objects.filter(faculty=staff)
     batch_count = batches.count()
@@ -5365,12 +5564,109 @@ def admin_employee_tracking(request):
         except Employee.DoesNotExist:
             return Response({'error': 'Staff not found'}, status=404)
 
+        summary = _tracking_staff_summary(staff)
+        new_since = timezone.now() - timedelta(days=7)
+        if summary.get('tracking_type') == 'counselor':
+            branch_values = _tracking_branch_values(staff.branch)
+            month_since = timezone.now() - timedelta(days=30)
+            students = Students.objects.filter(branch__in=branch_values).select_related('assigned_batch', 'assigned_staff').order_by('first_name', 'last_name')
+            last_month_students = students.filter(created_at__gte=month_since).order_by('-created_at')
+            fee_transactions_qs = FeeTransaction.objects.filter(
+                Q(collected_by=staff.user) | Q(fee_payment__student__branch__in=branch_values)
+            ).select_related('fee_payment__student', 'fee_payment__batch').distinct().order_by('-paid_at')
+            login_records = UserActivity.objects.filter(employee=staff, user_type='employee').order_by('-login_time')[:20]
+            weekly_login_records = UserActivity.objects.filter(
+                employee=staff,
+                user_type='employee',
+                login_time__gte=timezone.now() - timedelta(days=7),
+            ).order_by('-login_time')
+            student_rows = [{
+                'id': student.id,
+                'student_id': student.student_id,
+                'name': f"{student.first_name} {student.last_name or ''}".strip(),
+                'email': student.email,
+                'mobile_no': student.mobile_no,
+                'batch': student.assigned_batch.batch_number if student.assigned_batch else '',
+                'assigned_staff': f"{student.assigned_staff.first_name} {student.assigned_staff.last_name or ''}".strip() if student.assigned_staff else '',
+                'assigned': bool(student.assigned_batch_id or student.assigned_staff_id),
+                'is_new': student.created_at >= new_since,
+                'created_at': student.created_at,
+                'updated_at': student.updated_at,
+            } for student in students[:100]]
+            last_month_student_rows = [{
+                'id': student.id,
+                'student_id': student.student_id,
+                'name': f"{student.first_name} {student.last_name or ''}".strip(),
+                'email': student.email,
+                'mobile_no': student.mobile_no,
+                'batch': student.assigned_batch.batch_number if student.assigned_batch else '',
+                'assigned_staff': f"{student.assigned_staff.first_name} {student.assigned_staff.last_name or ''}".strip() if student.assigned_staff else '',
+                'created_at': student.created_at,
+            } for student in last_month_students[:100]]
+
+            return Response({
+                'view_mode': 'staff_detail',
+                'branch': canonical_branch(staff.branch),
+                'branches': branches,
+                'branch_cards': branch_cards,
+                'staff': summary,
+                'charts': {
+                    'students_added': summary['performance_graph']['students_added'],
+                    'batches_added': summary['performance_graph']['batches_added'],
+                    'students_assigned': summary['performance_graph']['students_assigned'],
+                    'fee_management': summary['performance_graph']['fee_management'],
+                    'login_usage': summary['performance_graph']['login_usage'],
+                    'activity_score': summary['activity_score'],
+                    'content_total': 0,
+                },
+                'highlights': {
+                    'new_batches': summary['new_batches_count'],
+                    'new_students': summary['new_students_count'],
+                    'new_since': month_since,
+                    'last_month_students_count': summary['month_students_added'],
+                    'week_students_added': summary['week_students_added'],
+                    'month_students_added': summary['month_students_added'],
+                    'week_batches_added': summary['week_batches_added'],
+                    'month_batches_added': summary['month_batches_added'],
+                    'week_students_assigned': summary['week_students_assigned'],
+                    'month_students_assigned': summary['month_students_assigned'],
+                    'week_fee_managed': summary['week_fee_managed'],
+                    'month_fee_managed': summary['month_fee_managed'],
+                },
+                'batches': [],
+                'batch_details': [],
+                'students': student_rows,
+                'last_month_added_students': last_month_student_rows,
+                'fee_transactions': [{
+                    'student': f"{item.fee_payment.student.first_name} {item.fee_payment.student.last_name or ''}".strip() if item.fee_payment and item.fee_payment.student else '',
+                    'student_id': item.fee_payment.student.student_id if item.fee_payment and item.fee_payment.student else '',
+                    'batch': item.fee_payment.batch.batch_number if item.fee_payment and item.fee_payment.batch else '',
+                    'amount': item.amount,
+                    'payment_mode': item.payment_mode,
+                    'paid_at': item.paid_at,
+                    'bill_generated': item.bill_generated,
+                } for item in fee_transactions_qs[:30]],
+                'recent_attendance': [],
+                'session_completions': [],
+                'materials': [],
+                'tests': [],
+                'quizzes': [],
+                'login_records': [{
+                    'login_time': item.login_time,
+                    'logout_time': item.logout_time,
+                    'last_seen': item.last_seen,
+                } for item in login_records],
+                'weekly_login_records': [{
+                    'login_time': item.login_time,
+                    'logout_time': item.logout_time,
+                    'last_seen': item.last_seen,
+                } for item in weekly_login_records],
+            })
+
         batches = Batches.objects.filter(faculty=staff).select_related('course_name').order_by('-created_at')
         students = Students.objects.filter(
             Q(assigned_staff=staff) | Q(assigned_batch__faculty=staff)
         ).select_related('assigned_batch').distinct().order_by('first_name', 'last_name')
-        summary = _tracking_staff_summary(staff)
-        new_since = timezone.now() - timedelta(days=7)
 
         attendance_qs = StudentAttendance.objects.filter(staff=staff).select_related('student', 'batch').order_by('-date', '-created_at')
         attendance_total = attendance_qs.count()
@@ -5637,7 +5933,12 @@ def admin_employee_tracking_pdf(request):
         return labels.get(value, value or '-')
 
     summary = _tracking_staff_summary(staff)
-    batches = Batches.objects.filter(faculty=staff).select_related('course_name').order_by('batch_number')
+    is_counselor_report = summary.get('tracking_type') == 'counselor'
+    batches = (
+        Batches.objects.filter(branch__in=_tracking_branch_values(staff.branch)).select_related('course_name').order_by('batch_number')
+        if is_counselor_report
+        else Batches.objects.filter(faculty=staff).select_related('course_name').order_by('batch_number')
+    )
     attendance_qs = StudentAttendance.objects.filter(staff=staff)
     attendance_total = attendance_qs.count()
     attendance_present = attendance_qs.filter(status__iexact='Present').count()
@@ -5903,12 +6204,21 @@ def admin_employee_tracking_pdf(request):
         'duration': format_duration(item.login_time, item.logout_time or item.last_seen),
     } for item in weekly_login_records]
 
-    performance_rows = [
-        {'metric': 'Batch Completion', 'count': f"{summary['completed_batch_count']}/{summary['batch_count']} batches", 'percentage': summary['performance_graph']['batch_completion'], 'color': '#059669'},
-        {'metric': 'Quiz Upload', 'count': summary['quizzes_created'], 'percentage': summary['performance_graph']['quiz_upload'], 'color': '#7c3aed'},
-        {'metric': 'Material Upload', 'count': summary['materials_uploaded'], 'percentage': summary['performance_graph']['material_upload'], 'color': '#0891b2'},
-        {'metric': 'Login Usage', 'count': f"{summary['login_usage_count']}/{summary['login_usage_target']} logins", 'percentage': summary['performance_graph']['login_usage'], 'color': '#ca8a04'},
-    ]
+    if is_counselor_report:
+        performance_rows = [
+            {'metric': 'Students Added', 'count': summary['month_students_added'], 'percentage': summary['performance_graph']['students_added'], 'color': '#0891b2'},
+            {'metric': 'Batches Added', 'count': summary['month_batches_added'], 'percentage': summary['performance_graph']['batches_added'], 'color': '#7c3aed'},
+            {'metric': 'Students Assigned', 'count': summary['month_students_assigned'], 'percentage': summary['performance_graph']['students_assigned'], 'color': '#059669'},
+            {'metric': 'Fee Managed', 'count': summary['month_fee_managed'], 'percentage': summary['performance_graph']['fee_management'], 'color': '#dc2626'},
+            {'metric': 'Login Usage', 'count': f"{summary['login_usage_count']}/{summary['login_usage_target']} logins", 'percentage': summary['performance_graph']['login_usage'], 'color': '#ca8a04'},
+        ]
+    else:
+        performance_rows = [
+            {'metric': 'Batch Completion', 'count': f"{summary['completed_batch_count']}/{summary['batch_count']} batches", 'percentage': summary['performance_graph']['batch_completion'], 'color': '#059669'},
+            {'metric': 'Quiz Upload', 'count': summary['quizzes_created'], 'percentage': summary['performance_graph']['quiz_upload'], 'color': '#7c3aed'},
+            {'metric': 'Material Upload', 'count': summary['materials_uploaded'], 'percentage': summary['performance_graph']['material_upload'], 'color': '#0891b2'},
+            {'metric': 'Login Usage', 'count': f"{summary['login_usage_count']}/{summary['login_usage_target']} logins", 'percentage': summary['performance_graph']['login_usage'], 'color': '#ca8a04'},
+        ]
 
     story = [
         header,

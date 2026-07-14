@@ -18,9 +18,9 @@ def env_list(key, default=None, sep=','):
         return [item.strip() for item in value.split(sep) if item.strip()]
     return default or []
 
-LOCAL_DOMAIN = os.getenv('LOCAL_DOMAIN', 'testiie.indrainstitute.com').strip()
-LOCAL_LAN_DOMAIN = os.getenv('LOCAL_LAN_DOMAIN', 'testiie.indrainstitute.com').strip()
-DEPLOYMENT_DOMAIN = os.getenv('DEPLOYMENT_DOMAIN', 'testiie.indrainstitute.com').strip()
+LOCAL_DOMAIN = os.getenv('LOCAL_DOMAIN', '127.0.0.1:8000').strip()
+LOCAL_LAN_DOMAIN = os.getenv('LOCAL_LAN_DOMAIN', '192.168.1.7:8000').strip()
+DEPLOYMENT_DOMAIN = os.getenv('DEPLOYMENT_DOMAIN', '127.0.0.1:8000').strip()
 DEPLOYMENT_SCHEME = os.getenv(
     'DEPLOYMENT_SCHEME',
     'http' if DEPLOYMENT_DOMAIN.startswith(('localhost', '127.0.0.1', '192.168.')) else 'https',
@@ -29,9 +29,12 @@ DEPLOYMENT_ORIGIN = os.getenv('DEPLOYMENT_ORIGIN', f"{DEPLOYMENT_SCHEME}://{DEPL
 DEPLOYMENT_IS_LOCAL = DEPLOYMENT_DOMAIN.startswith(('localhost', '127.0.0.1', '192.168.'))
 CSRF_TRUSTED_ORIGINS = env_list('DJANGO_CSRF_TRUSTED_ORIGINS', [
     DEPLOYMENT_ORIGIN,
-    f'https://{LOCAL_DOMAIN}',
-    f'https://{LOCAL_LAN_DOMAIN}',
-    'https://testiie.indrainstitute.com',
+    f'http://{LOCAL_DOMAIN}',
+    f'http://{LOCAL_LAN_DOMAIN}',
+    'http://localhost:5173',
+    'http://127.0.0.1:5173',
+    'http://192.168.1.7:5173',
+    'http://192.168.1.6:5173',
 ])
 INSTALLED_APPS = [
     'django.contrib.admin',
@@ -141,6 +144,9 @@ if not ALLOWED_HOSTS:
         DEPLOYMENT_DOMAIN,
         LOCAL_DOMAIN.split(':')[0],
         LOCAL_LAN_DOMAIN.split(':')[0],
+        '192.168.1.7',
+        'localhost',
+        '127.0.0.1',
     ]
 
 REST_FRAMEWORK = {

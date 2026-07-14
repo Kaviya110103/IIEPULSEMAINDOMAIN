@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import api from '../../api/client'
 import toast from 'react-hot-toast'
 import { useNavigate } from 'react-router-dom'  // ← ADD THIS
@@ -1651,15 +1651,54 @@ function TakeQuiz({ quiz, onDone }) {
   const [current, setCurrent] = useState(0)
   const [timeLeft, setTimeLeft] = useState(quiz.duration_minutes * 60)
   const [quizStarted, setQuizStarted] = useState(false)
+  const [agreedToRules, setAgreedToRules] = useState(false)
+  const confirmDialogOpenRef = useRef(false)
+  const autoEndingRef = useRef(false)
 
   const questions = quiz.questions || []
 
+  const enterQuizFullscreen = async () => {
+    try {
+      if (!document.fullscreenElement && document.documentElement.requestFullscreen) {
+        await document.documentElement.requestFullscreen()
+      }
+    } catch {
+      // Browser may block fullscreen; the fixed quiz shell still covers the app UI.
+    }
+  }
+
+  const exitQuizFullscreen = async () => {
+    try {
+      if (document.fullscreenElement && document.exitFullscreen) {
+        await document.exitFullscreen()
+      }
+    } catch {
+      // Ignore browser fullscreen cleanup failures.
+    }
+  }
+
+  const handleStartQuiz = async () => {
+    setQuizStarted(true)
+    await enterQuizFullscreen()
+  }
+
+  const finishQuizView = async () => {
+    await exitQuizFullscreen()
+    onDone()
+  }
+
   useEffect(() => {
     if (!quizStarted || result) return
-    if (timeLeft <= 0) { submitQuiz(); return }
+    if (timeLeft <= 0) { submitQuiz({ skipConfirm: true }); return }
     const timer = setInterval(() => setTimeLeft(prev => prev - 1), 1000)
     return () => clearInterval(timer)
   }, [timeLeft, quizStarted, result])
+
+  useEffect(() => {
+    if (result) exitQuizFullscreen()
+  }, [result])
+
+  useEffect(() => () => { exitQuizFullscreen() }, [])
 
   const formatTime = (seconds) => {
     const mins = Math.floor(seconds / 60)
@@ -1667,30 +1706,102 @@ function TakeQuiz({ quiz, onDone }) {
     return `${mins}:${secs.toString().padStart(2, '0')}`
   }
 
-  const submitQuiz = async () => {
+  const submitQuiz = async ({ skipConfirm = false, autoEnd = false } = {}) => {
+    if (submitting) return
     const answeredCount = Object.keys(answers).length
-    if (answeredCount < questions.length && !window.confirm(`You have answered ${answeredCount}/${questions.length} questions. Submit anyway?`)) return
+    if (!skipConfirm && answeredCount < questions.length) {
+      confirmDialogOpenRef.current = true
+      const shouldSubmit = window.confirm(`You have answered ${answeredCount}/${questions.length} questions. Submit anyway?`)
+      confirmDialogOpenRef.current = false
+      if (!shouldSubmit) return
+    }
     setSubmitting(true)
     try {
       const response = await api.post(`/quiz/${quiz.id}/take/`, { answers })
       const resultResponse = await api.get(`/quiz/result/${response.data.attempt_id}/`)
       setResult(resultResponse.data)
-      toast.success('Quiz submitted successfully!')
+      toast.success(autoEnd ? 'Quiz ended because you switched away from the quiz window.' : 'Quiz submitted successfully!')
     } catch { toast.error('Submission failed') }
-    finally { setSubmitting(false) }
+    finally {
+      autoEndingRef.current = false
+      setSubmitting(false)
+    }
   }
+
+  const handleExitQuiz = () => {
+    confirmDialogOpenRef.current = true
+    const shouldExit = window.confirm('Exit and end this quiz now? Your current answers will be submitted.')
+    confirmDialogOpenRef.current = false
+    if (!shouldExit) return
+    submitQuiz({ skipConfirm: true })
+  }
+
+  useEffect(() => {
+    if (!quizStarted || result) return
+
+    const askToEndForSwitch = () => {
+      if (submitting || result || confirmDialogOpenRef.current || autoEndingRef.current) return
+      autoEndingRef.current = true
+      confirmDialogOpenRef.current = true
+      const shouldEnd = window.confirm('You are switching the tab. Do you want to end this quiz?')
+      confirmDialogOpenRef.current = false
+      if (shouldEnd) {
+        submitQuiz({ skipConfirm: true, autoEnd: true })
+        return
+      }
+      autoEndingRef.current = false
+      setTimeout(() => {
+        window.focus()
+        enterQuizFullscreen()
+      }, 100)
+    }
+
+    const handleVisibilityChange = () => {
+      if (document.hidden) askToEndForSwitch()
+    }
+
+    const handleKeyDown = (event) => {
+      const key = event.key.toLowerCase()
+      const switchingShortcut =
+        (event.ctrlKey && ['tab', 'l', 'r', 'w', 't', 'n'].includes(key)) ||
+        (event.altKey && ['tab', 'arrowleft', 'arrowright', 'f4'].includes(key)) ||
+        key === 'f5'
+
+      if (!switchingShortcut) return
+      event.preventDefault()
+      event.stopPropagation()
+      askToEndForSwitch()
+    }
+
+    window.addEventListener('blur', askToEndForSwitch)
+    window.addEventListener('keydown', handleKeyDown, true)
+    document.addEventListener('visibilitychange', handleVisibilityChange)
+    return () => {
+      window.removeEventListener('blur', askToEndForSwitch)
+      window.removeEventListener('keydown', handleKeyDown, true)
+      document.removeEventListener('visibilitychange', handleVisibilityChange)
+    }
+  }, [quizStarted, result, submitting, answers])
 
   if (!quizStarted && !result) {
     return (
       <div className="student-root">
         <StudentStyles />
-        <StudentPageHeader title={quiz.title} btn={<button className="student-btn student-btn-ghost" onClick={onDone}>Exit</button>} />
+        <StudentPageHeader title={quiz.title} btn={<button className="student-btn student-btn-ghost" onClick={finishQuizView}>Exit</button>} />
         <div className="student-card" style={{ maxWidth: 600, margin: '0 auto', textAlign: 'center' }}>
           <div style={{ padding: 32 }}>
             <div style={{ fontSize: 48, marginBottom: 20 }}>📝</div>
             <h3>Ready to start?</h3>
             <div style={{ margin: '20px 0' }}><p><strong>Duration:</strong> {quiz.duration_minutes} minutes</p><p><strong>Questions:</strong> {questions.length}</p><p><strong>Passing marks:</strong> {quiz.passing_marks}%</p></div>
-            <button className="student-btn student-btn-primary" onClick={() => setQuizStarted(true)}>Start Quiz</button>
+            <div className="student-alert-info" style={{ margin: '20px 0', textAlign: 'left' }}>
+              <strong>Quiz Instructions</strong>
+              <p style={{ margin: '8px 0 0' }}>Do not switch tabs, use Alt+Tab, minimize the browser, or leave the quiz window after starting. If you try to switch, you must choose whether to end this quiz or continue.</p>
+            </div>
+            <label style={{ display: 'flex', gap: 10, alignItems: 'flex-start', justifyContent: 'center', marginBottom: 18, cursor: 'pointer', fontWeight: 700 }}>
+              <input type="checkbox" checked={agreedToRules} onChange={e => setAgreedToRules(e.target.checked)} style={{ marginTop: 3, accentColor: T.amber }} />
+              <span>I agree to follow the quiz instructions.</span>
+            </label>
+            <button className="student-btn student-btn-primary" onClick={handleStartQuiz} disabled={!agreedToRules}>Agree and Continue</button>
           </div>
         </div>
       </div>
@@ -1702,7 +1813,7 @@ function TakeQuiz({ quiz, onDone }) {
     return (
       <div className="student-root">
         <StudentStyles />
-        <StudentPageHeader title={`Quiz Result: ${quiz.title}`} btn={<button className="student-btn student-btn-ghost" onClick={onDone}>Back to Quizzes</button>} />
+        <StudentPageHeader title={`Quiz Result: ${quiz.title}`} btn={<button className="student-btn student-btn-ghost" onClick={finishQuizView}>Back to Quizzes</button>} />
         <div className="student-card" style={{ maxWidth: 500, margin: '0 auto 20px', textAlign: 'center' }}>
           <div style={{ padding: 32 }}>
             <div style={{ fontSize: 64, marginBottom: 20 }}>{passed ? '🎉' : '😔'}</div>
@@ -1710,10 +1821,10 @@ function TakeQuiz({ quiz, onDone }) {
             <div style={{ fontSize: 48, fontWeight: 700, color: passed ? T.sage : T.rose, margin: '16px 0' }}>{result.percentage}%</div>
             <p>Your Score: <strong>{result.score}/{result.total_marks}</strong></p>
             <p>Correct: {result.correct_count} | Wrong: {result.wrong_count}</p>
-            <button className="student-btn student-btn-primary" onClick={onDone}>Back to Quizzes</button>
+            <button className="student-btn student-btn-primary" onClick={finishQuizView}>Back to Quizzes</button>
           </div>
         </div>
-        <QuizReviewPanel review={result} onClose={onDone} />
+        <QuizReviewPanel review={result} onClose={finishQuizView} />
       </div>
     )
   }
@@ -1722,11 +1833,11 @@ function TakeQuiz({ quiz, onDone }) {
   const answeredCount = Object.keys(answers).length
 
   return (
-    <div className="student-root">
+    <div className="student-root" style={{ position: 'fixed', inset: 0, zIndex: 9999, width: '100vw', height: '100vh', overflow: 'auto', background: '#f8fafc', padding: '24px clamp(16px, 3vw, 44px) 92px' }}>
       <StudentStyles />
       <div className="student-page-header" style={{ justifyContent: 'space-between' }}>
         <div><h3>{quiz.title}</h3><p>Question {current + 1} of {questions.length}</p></div>
-        <div><div className="student-badge" style={{ background: T.rose, color: '#fff', fontSize: 14, marginBottom: 8 }}><i className="fas fa-hourglass-half" /> Time Left: {formatTime(timeLeft)}</div><button className="student-btn student-btn-ghost student-btn-sm" onClick={onDone}>Exit</button></div>
+        <div><div className="student-badge" style={{ background: T.rose, color: '#fff', fontSize: 14 }}><i className="fas fa-hourglass-half" /> Time Left: {formatTime(timeLeft)}</div></div>
       </div>
       <div className="student-row-grid-2" style={{ alignItems: 'start' }}>
         <div className="student-card">
@@ -1761,6 +1872,14 @@ function TakeQuiz({ quiz, onDone }) {
           </div>
         </div>
       </div>
+      <button
+        className="student-btn student-btn-danger"
+        onClick={handleExitQuiz}
+        disabled={submitting}
+        style={{ position: 'fixed', right: 24, bottom: 22, zIndex: 10000, boxShadow: '0 14px 34px rgba(232,72,85,.32)' }}
+      >
+        {submitting ? 'Ending...' : 'Exit Quiz'}
+      </button>
     </div>
   )
 }
