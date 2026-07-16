@@ -5,6 +5,7 @@ import { AuthProvider, useAuth } from './context/AuthContext'
 import AppLayout from './components/layout/AppLayout'
 import Login from './pages/auth/Login'
 import logo from './assets/IIE.png'
+import UserNotifications from './pages/common/UserNotifications'
 import './styles/global.css'
 
 // ── Admin ──────────────────────────────────────────────────────────────────
@@ -227,6 +228,7 @@ function AppRoutes() {
         <Route path="quiz" element={<ManageQuizzes />} />
         <Route path="quiz-results" element={<QuizResults />} />
         <Route path="completed" element={<CompletedStudents />} />
+        <Route path="notifications" element={<UserNotifications />} />
       </Route>
 
       {/* ── EMPLOYEE ──────────────────────────────────────────────── */}
@@ -268,6 +270,7 @@ function AppRoutes() {
         <Route path="support" element={<StaffSupportRequest />} />
         <Route path="support/new" element={<StaffSupportRequest />} />
         <Route path="completed" element={<StaffCompletedStudents />} />
+        <Route path="notifications" element={<UserNotifications />} />
       </Route>
 
       {/* ── COUNSELOR ─────────────────────────────────────────────── */}
@@ -292,6 +295,7 @@ function AppRoutes() {
         <Route path="pending" element={<CounselorPendingRequests />} />
         <Route path="approved" element={<CounselorApprovedRequests />} />
         <Route path="completed-students" element={<CounselorCompletedStudents />} />
+        <Route path="notifications" element={<UserNotifications />} />
       </Route>
 
       {/* ── STUDENT ───────────────────────────────────────────────── */}

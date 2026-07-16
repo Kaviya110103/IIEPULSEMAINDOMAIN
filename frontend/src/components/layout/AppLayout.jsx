@@ -1,15 +1,46 @@
-import { Outlet } from 'react-router-dom'
+import { useEffect, useState } from 'react'
+import { Link, Outlet, useLocation } from 'react-router-dom'
 import Sidebar from './Sidebar'
 import { useAuth } from '../../context/AuthContext'
+import api from '../../api/client'
 
 export default function AppLayout({ role }) {
   const { user } = useAuth()
+  const location = useLocation()
+  const [unread, setUnread] = useState(0)
   const roleLabel = {
     admin: 'Administrator',
     employee: user?.designation || 'Employee',
     student: 'Student',
     counselor: 'Counselor'
   }
+  const notificationPath = {
+    admin: '/admin/notifications',
+    employee: '/employee/notifications',
+    counselor: '/counselor/notifications',
+    student: '/student/notifications',
+  }[role] || '/student/notifications'
+
+  const refreshUnread = () => {
+    let alive = true
+    api.get('/notifications/')
+      .then(res => {
+        if (!alive) return
+        setUnread((res.data || []).filter(item => !item.is_read).length)
+      })
+      .catch(() => {
+        if (alive) setUnread(0)
+      })
+    return () => { alive = false }
+  }
+
+  useEffect(() => refreshUnread(), [role, location.pathname])
+
+  useEffect(() => {
+    const handleRead = () => setUnread(0)
+    window.addEventListener('iie:notifications-read', handleRead)
+    return () => window.removeEventListener('iie:notifications-read', handleRead)
+  }, [])
 
   return (
     <div style={{ display: 'flex', minHeight: '100vh', background: '#f4f6f9' }}>
@@ -28,6 +59,47 @@ export default function AppLayout({ role }) {
             {roleLabel[role]} Portal
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+            <Link
+              to={notificationPath}
+              title="Notifications"
+              onClick={() => setUnread(0)}
+              style={{
+                width: 38,
+                height: 38,
+                borderRadius: '50%',
+                border: '1px solid #e2e8f0',
+                background: '#fff',
+                color: '#1f2937',
+                display: 'inline-flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                textDecoration: 'none',
+                position: 'relative',
+              }}
+            >
+              <i className="fas fa-bell" />
+              {unread > 0 && (
+                <span style={{
+                  position: 'absolute',
+                  top: -5,
+                  right: -4,
+                  minWidth: 18,
+                  height: 18,
+                  padding: '0 5px',
+                  borderRadius: 999,
+                  background: '#ef4444',
+                  color: '#fff',
+                  fontSize: 10,
+                  fontWeight: 800,
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  border: '2px solid #fff',
+                }}>
+                  {unread > 9 ? '9+' : unread}
+                </span>
+              )}
+            </Link>
             <div style={{ textAlign: 'right' }}>
               <div style={{ fontSize: 13.5, fontWeight: 600, color: '#1a2035' }}>
                 {user?.name || user?.username}

@@ -1,6 +1,6 @@
 import { Tabs, useGlobalSearchParams, usePathname, useRouter } from "expo-router";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ActivityIndicator, AppState, BackHandler, PanResponder, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
+import { ActivityIndicator, AppState, BackHandler, Image, PanResponder, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useStudentAuthGuard } from "@/hooks/use-student-auth-guard";
@@ -9,6 +9,7 @@ import api from "@/services/api";
 const HOME_PATH = "/welcome";
 const NO_SWIPE_PATHS = new Set(["/", HOME_PATH, "/dashboard", "/loginform", "/register", "/public-overview"]);
 const INACTIVITY_LIMIT = 5 * 60 * 1000;
+const appLogo = require("../../assets/images/logo-light.png");
 
 const drawerItems: Array<{
   key: string;
@@ -239,9 +240,14 @@ export default function TabsLayout() {
           <Pressable style={styles.drawerOverlay} onPress={() => setDrawerOpen(false)} />
           <View style={styles.drawer}>
             <View style={styles.drawerHeader}>
-              <View>
+              <View style={styles.drawerBrand}>
+                <View style={styles.drawerLogoMark}>
+                  <Image source={appLogo} style={styles.drawerLogoImage} resizeMode="contain" />
+                </View>
+                <View>
                 <Text style={styles.drawerTitle}>IIE Pulse</Text>
                 <Text style={styles.drawerSubtitle}>Student Portal</Text>
+                </View>
               </View>
               <Pressable style={styles.drawerClose} onPress={() => setDrawerOpen(false)}>
                 <Ionicons name="close" size={22} color="#FFFFFF" />
@@ -339,9 +345,29 @@ const styles = StyleSheet.create({
     borderBottomWidth: 1,
     borderBottomColor: "rgba(255,255,255,0.16)",
   },
+  drawerBrand: {
+    flex: 1,
+    minWidth: 0,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+  },
+  drawerLogoMark: {
+    width: 72,
+    height: 72,
+    borderRadius: 16,
+    backgroundColor: "#FFFFFF",
+    alignItems: "center",
+    justifyContent: "center",
+    overflow: "hidden",
+  },
+  drawerLogoImage: {
+    width: 68,
+    height: 68,
+  },
   drawerTitle: {
     color: "#FFFFFF",
-    fontSize: 22,
+    fontSize: 20,
     fontWeight: "800",
   },
   drawerSubtitle: {

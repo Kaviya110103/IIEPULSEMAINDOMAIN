@@ -847,10 +847,31 @@ export function StudentSessions() {
 export function StudentNotifications() {
   const [notifications, setNotifications] = useState([])
   const [loading, setLoading] = useState(true)
+  const navigate = useNavigate()
+  const getTargetPath = (item) => {
+    const paths = {
+      announcement: '/student/announcements',
+      leave_alert: '/student/attendance',
+      session_completed: '/student/sessions',
+      doubt_raised: '/student/sessions',
+      doubt_resolved: '/student/sessions',
+      quiz_result: '/student/quiz',
+      support: '/student/support',
+      leave_application: '/student/leave',
+    }
+    return paths[item.type] || '/student'
+  }
 
   const load = () => {
     setLoading(true)
-    api.get('/notifications/student/').then(r => setNotifications(r.data)).finally(() => setLoading(false))
+    api.get('/notifications/').then(async r => {
+      const data = r.data || []
+      setNotifications(data.map(n => ({ ...n, is_read: true })))
+      if (data.some(n => !n.is_read)) {
+        api.post('/notifications/read-all/')
+        window.dispatchEvent(new Event('iie:notifications-read'))
+      }
+    }).finally(() => setLoading(false))
   }
   useEffect(() => { load() }, [])
 
@@ -869,13 +890,13 @@ export function StudentNotifications() {
         {loading ? <StudentSpin /> : notifications.length === 0 ? <StudentEmpty msg="No notifications yet" icon="fa-bell-slash" /> : (
           <div style={{ padding: '0 22px 22px 22px' }}>
             {notifications.map(n => (
-              <div key={n.id} onClick={() => !n.is_read && markRead(n.id)} style={{ padding: 16, marginBottom: 12, background: n.is_read ? '#fff' : '#f0f7ff', border: `1px solid ${n.is_read ? T.border : T.teal}`, borderRadius: 12, cursor: n.is_read ? 'default' : 'pointer' }}>
+              <div key={n.id} onClick={() => navigate(getTargetPath(n))} style={{ padding: 16, marginBottom: 12, background: n.is_read ? '#fff' : '#f0f7ff', border: `1px solid ${n.is_read ? T.border : T.teal}`, borderRadius: 12, cursor: 'pointer' }}>
                 <div style={{ display: 'flex', gap: 14 }}>
                   <div style={{ width: 40, height: 40, borderRadius: '50%', background: `${T.teal}15`, display: 'flex', alignItems: 'center', justifyContent: 'center' }}><i className="fas fa-bell" style={{ color: T.teal }} /></div>
                   <div style={{ flex: 1 }}>
                     <div style={{ display: 'flex', justifyContent: 'space-between' }}><strong>{n.title}</strong><small style={{ color: T.slate }}>{n.created_at}</small></div>
                     <p style={{ margin: '4px 0 0', fontSize: 13 }}>{n.message}</p>
-                    {!n.is_read && <small style={{ color: T.teal, marginTop: 8, display: 'block' }}>Click to mark as read</small>}
+                    <small style={{ color: T.teal, marginTop: 8, display: 'block', fontWeight: 700 }}>Click to open</small>
                   </div>
                 </div>
               </div>

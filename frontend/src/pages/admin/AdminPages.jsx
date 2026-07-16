@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
 import api from '../../api/client'
 import toast from 'react-hot-toast'
-import { useNavigate } from 'react-router-dom'  // ← ADD THIS
+import { useLocation, useNavigate } from 'react-router-dom'  // ← ADD THIS
 import { useAuth } from '../../context/AuthContext'  // ← ADD THIS
 
 
@@ -2005,13 +2005,32 @@ export function AdminBranchAttendance() {
   const [loading, setLoading] = useState(true)
   const [staffData, setStaffData] = useState([])
   const [loadingStaff, setLoadingStaff] = useState(false)
+  const location = useLocation()
+  const deepLink = new URLSearchParams(location.search)
+  const targetStudentId = deepLink.get('student_id')
+  const targetBatchId = deepLink.get('batch_id')
+  const targetTab = deepLink.get('tab') || 'overview'
 
   const load = (params = '') => {
     setLoading(true)
     api.get(`/admin/branch-attendance/${params}`).then(r => setData(r.data)).finally(() => setLoading(false))
   }
 
-  useEffect(() => { load() }, [])
+  useEffect(() => {
+    const params = new URLSearchParams(location.search)
+    const branch = params.get('branch')
+    const staffId = params.get('staff_id')
+    if (staffId) {
+      const query = new URLSearchParams()
+      if (branch) query.set('branch', branch)
+      query.set('staff_id', staffId)
+      load(`?${query.toString()}`)
+    } else if (branch) {
+      load(`?branch=${encodeURIComponent(branch)}`)
+    } else {
+      load()
+    }
+  }, [location.search])
 
   // Fetch correct student counts when in branch_staff view
   useEffect(() => {
@@ -2176,13 +2195,13 @@ export function AdminBranchAttendance() {
   }
 
   if (view_mode === 'staff_details') {
-    return <StaffDetailsView staff={data.staff || {}} students={data.student_details || []} data={data} onBack={() => load(`?branch=${data.branch_name}`)} />
+    return <StaffDetailsView staff={data.staff || {}} students={data.student_details || []} data={data} onBack={() => load(`?branch=${data.branch_name}`)} targetStudentId={targetStudentId} targetBatchId={targetBatchId} targetTab={targetTab} />
   }
 
   return <div className="admin-root"><AdminStyles /><AdminSpin /></div>
 }
 
-function StaffDetailsView({ staff, students, data, onBack }) {
+function StaffDetailsView({ staff, students, data, onBack, targetStudentId, targetBatchId, targetTab }) {
   const [selectedBatch, setSelectedBatch] = useState(null)
   const [selectedStudent, setSelectedStudent] = useState(null)
   const [modalOpen, setModalOpen] = useState(false)
@@ -2302,6 +2321,30 @@ function StaffDetailsView({ staff, students, data, onBack }) {
     }
   }, [staff, students])
 
+  useEffect(() => {
+    if (!targetStudentId || !students.length) return
+    const numericStudentId = Number(targetStudentId)
+    const directStudent = students.find(item => Number(item.student?.id || item.id) === numericStudentId)
+    if (!directStudent) return
+    setSelectedStudent(directStudent)
+    setViewMode('students')
+    setModalOpen(true)
+  }, [targetStudentId, students])
+
+  useEffect(() => {
+    if (loading || !targetStudentId || batches.length === 0) return
+    const numericStudentId = Number(targetStudentId)
+    const targetBatch = batches.find(batch => String(batch.id) === String(targetBatchId))
+      || batches.find(batch => (batchStudents[batch.id] || []).some(student => Number(student.id) === numericStudentId))
+    if (!targetBatch) return
+    const targetStudent = (batchStudents[targetBatch.id] || []).find(student => Number(student.id) === numericStudentId)
+    if (!targetStudent) return
+    setSelectedBatch(targetBatch)
+    setViewMode('students')
+    setSelectedStudent(targetStudent)
+    setModalOpen(true)
+  }, [loading, targetStudentId, targetBatchId, batches, batchStudents])
+
   const handleBatchClick = (batch) => {
     setSelectedBatch(batch)
     setViewMode('students')
@@ -2317,7 +2360,7 @@ function StaffDetailsView({ staff, students, data, onBack }) {
     setModalOpen(true)
   }
 
-  if (loading && batches.length === 0) {
+  if (loading && batches.length === 0 && !targetStudentId) {
     return <AdminSpin />
   }
 
@@ -2372,7 +2415,11 @@ function StaffDetailsView({ staff, students, data, onBack }) {
       {/* Batches View - Show Batch Cards */}
       {viewMode === 'batches' && (
         <div className="admin-row-grid-2">
-          {batches.length === 0 ? (
+          {loading && batches.length === 0 ? (
+            <div className="admin-card" style={{ padding: 40, textAlign: 'center', gridColumn: '1/-1' }}>
+              <AdminSpin />
+            </div>
+          ) : batches.length === 0 ? (
             <div className="admin-card" style={{ padding: 40, textAlign: 'center', gridColumn: '1/-1' }}>
               <AdminEmpty msg={`No batches found for ${staff.branch} branch`} icon="fa-layer-group" />
               <div style={{ marginTop: 10, fontSize: 12, color: T.slate }}>
@@ -2512,14 +2559,19 @@ function StaffDetailsView({ staff, students, data, onBack }) {
         student={selectedStudent}
         onClose={() => setModalOpen(false)}
         formatDate={formatDate}
+        initialTab={targetTab}
       />
     </div>
   )
 }
 
 // ── ADMIN STUDENT DETAIL MODAL (Clean Design with Close Button) ─────────────────────────────────
-function AdminStudentDetailModal({ open, student, onClose, formatDate }) {
-  const [modalTab, setModalTab] = useState('overview')
+function AdminStudentDetailModal({ open, student, onClose, formatDate, initialTab = 'overview' }) {
+  const [modalTab, setModalTab] = useState(initialTab || 'overview')
+
+  useEffect(() => {
+    if (open) setModalTab(initialTab || 'overview')
+  }, [open, initialTab])
 
   if (!open || !student) return null
 

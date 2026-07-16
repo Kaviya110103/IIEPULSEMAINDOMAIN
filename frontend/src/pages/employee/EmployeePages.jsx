@@ -1582,8 +1582,9 @@ export function MarkAttendance() {
     setSaving(true)
     try {
       const data = Object.entries(attendance).map(([student_id, status]) => ({ student_id: parseInt(student_id), status }))
-      await api.post('/attendance/mark/', { batch_id: parseInt(selectedBatch), date, attendance: data })
-      toast.success('Attendance saved successfully!')
+      const res = await api.post('/attendance/mark/', { batch_id: parseInt(selectedBatch), date, attendance: data })
+      const alertCount = Number(res.data?.leave_alerts || 0)
+      toast.success(alertCount > 0 ? `Attendance saved. ${alertCount} leave alerts sent.` : 'Attendance saved successfully!')
     } catch (err) {
       toast.error(err.response?.data?.error || err.response?.data?.detail || 'Failed to save')
     } finally { setSaving(false) }

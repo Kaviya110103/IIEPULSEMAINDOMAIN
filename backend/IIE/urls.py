@@ -201,7 +201,9 @@ urlpatterns = [
     # â”€â”€ DOUBTS & NOTIFICATIONS â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     path('api/doubts/<int:progress_id>/reply/', v.staff_reply_doubt),
     path('api/doubts/staff/', v.get_staff_doubts_detail),
+    path('api/notifications/', v.get_student_notifications),
     path('api/notifications/student/', v.get_student_notifications),
+    path('api/notifications/read-all/', v.mark_all_notifications_read),
     path('api/notifications/<int:notif_id>/read/', v.mark_notification_read),
 
     # â”€â”€ QUIZ â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -234,6 +236,7 @@ urlpatterns = [
     path('api/counselor/requests/<int:pk>/process/', v.process_completion_request),
     path('api/counselor/requests/<int:request_id>/reassign/', v.counselor_reassign_student),
     path('api/counselor/students/', v.counselor_student_details),
+    path('api/counselor/students/<int:student_id>/detail/', v.counselor_student_detail),
 
     # â”€â”€ ADMIN LEAVE â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     path('api/admin/staff-leave/', v.admin_staff_leave),

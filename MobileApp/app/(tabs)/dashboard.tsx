@@ -128,9 +128,9 @@ const styles = StyleSheet.create({
     elevation: 6,
   },
   logo: {
-    width: "78%",
-    height: 92,
-    marginBottom: 14,
+    width: "92%",
+    height: 170,
+    marginBottom: 18,
   },
   iconRow: {
     flexDirection: "row",

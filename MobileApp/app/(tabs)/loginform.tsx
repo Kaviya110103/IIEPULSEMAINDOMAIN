@@ -7,6 +7,7 @@ import { useRouter } from "expo-router";
 import { useEffect, useRef, useState } from "react";
 import {
   Animated,
+  Easing,
   Image,
   KeyboardAvoidingView,
   Platform,
@@ -28,6 +29,9 @@ export default function LoginForm() {
   const [errorMsg, setErrorMsg] = useState("");
   const [loading, setLoading] = useState(false);
   const fadeAnim = useRef(new Animated.Value(0)).current;
+  const formSlideAnim = useRef(new Animated.Value(18)).current;
+  const splashFadeAnim = useRef(new Animated.Value(0)).current;
+  const splashScaleAnim = useRef(new Animated.Value(0.86)).current;
 
   useEffect(() => {
     const redirectIfLoggedIn = async () => {
@@ -47,17 +51,50 @@ export default function LoginForm() {
   }, []);
 
   useEffect(() => {
-    Animated.timing(fadeAnim, {
-      toValue: 1,
-      duration: 700,
-      useNativeDriver: Platform.OS !== "web",
-    }).start();
-  }, [fadeAnim]);
+    Animated.parallel([
+      Animated.timing(fadeAnim, {
+        toValue: 1,
+        duration: 700,
+        useNativeDriver: Platform.OS !== "web",
+      }),
+      Animated.timing(formSlideAnim, {
+        toValue: 0,
+        duration: 700,
+        easing: Easing.out(Easing.cubic),
+        useNativeDriver: Platform.OS !== "web",
+      }),
+      Animated.spring(splashScaleAnim, {
+        toValue: 1,
+        friction: 6,
+        tension: 70,
+        useNativeDriver: Platform.OS !== "web",
+      }),
+      Animated.timing(splashFadeAnim, {
+        toValue: 1,
+        duration: 520,
+        easing: Easing.out(Easing.cubic),
+        useNativeDriver: Platform.OS !== "web",
+      }),
+    ]).start();
+  }, [fadeAnim, formSlideAnim, splashFadeAnim, splashScaleAnim]);
 
   if (showSplash) {
     return (
       <View style={styles.splashScreen}>
-        <Image source={appLogo} style={styles.splashLogo} resizeMode="contain" />
+        <Animated.View
+          style={[
+            styles.splashLogoWrap,
+            {
+              opacity: splashFadeAnim,
+              transform: [{ scale: splashScaleAnim }],
+            },
+          ]}
+        >
+          <Image source={appLogo} style={styles.splashLogo} resizeMode="contain" />
+        </Animated.View>
+        <Animated.Text style={[styles.splashTagline, { opacity: splashFadeAnim }]}>
+          Learn. Track. Assess. Succeed.
+        </Animated.Text>
       </View>
     );
   }
@@ -118,7 +155,15 @@ export default function LoginForm() {
         behavior={Platform.OS === "ios" ? "padding" : "height"}
         style={styles.keyboard}
       >
-        <Animated.View style={[styles.formCard, { opacity: fadeAnim }]}>
+        <Animated.View
+          style={[
+            styles.formCard,
+            {
+              opacity: fadeAnim,
+              transform: [{ translateY: formSlideAnim }],
+            },
+          ]}
+        >
           <View style={styles.logoPanel}>
             <Image source={appLogo} style={styles.cardLogo} resizeMode="contain" />
           </View>
@@ -203,15 +248,32 @@ export default function LoginForm() {
 const styles = StyleSheet.create({
   splashScreen: {
     flex: 1,
-    backgroundColor: "#FFFFFF",
+    backgroundColor: "#F8F7FF",
     alignItems: "center",
     justifyContent: "center",
-    paddingHorizontal: 30,
+    paddingHorizontal: 18,
+  },
+  splashLogoWrap: {
+    width: "100%",
+    alignItems: "center",
+    justifyContent: "center",
+    shadowColor: "#5523D2",
+    shadowOpacity: 0.18,
+    shadowRadius: 22,
+    shadowOffset: { width: 0, height: 14 },
+    elevation: 8,
   },
   splashLogo: {
-    width: "92%",
-    maxWidth: 360,
-    height: 230,
+    width: "100%",
+    maxWidth: 430,
+    height: 360,
+  },
+  splashTagline: {
+    color: "#5523D2",
+    fontSize: 14,
+    fontWeight: "900",
+    letterSpacing: 0.4,
+    marginTop: 12,
   },
   container: {
     flex: 1,
@@ -240,7 +302,7 @@ const styles = StyleSheet.create({
   },
   logoPanel: {
     width: "100%",
-    height: 110,
+    height: 174,
     borderRadius: 22,
     backgroundColor: "#FFFFFF",
     alignItems: "center",
@@ -248,8 +310,8 @@ const styles = StyleSheet.create({
     marginBottom: 4,
   },
   cardLogo: {
-    width: "82%",
-    height: 92,
+    width: "94%",
+    height: 160,
   },
   titleText: {
     color: "#1F1335",

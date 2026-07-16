@@ -5,10 +5,10 @@ const parseAllowedHosts = () => {
   const hosts = process.env.VITE_ALLOWED_HOSTS
   return hosts
     ? hosts.split(',').map(host => host.trim()).filter(Boolean)
-    : ['testiie.indrainstitute.com']
+    : ['iiepulse.indrainstitute.com', 'www.iiepulse.indrainstitute.com']
 }
 
-const productionBackend = 'https://testiie.indrainstitute.com'
+const productionBackend = 'https://iiepulse.indrainstitute.com'
 
 export default defineConfig({
   plugins: [react()],

@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback } from 'react'
 import api from '../../api/client'
 import toast from 'react-hot-toast'
 import { useAuth } from '../../context/AuthContext'  // ← ADD THIS LINE
-import { useNavigate } from 'react-router-dom'  // ← ADD THIS
+import { useLocation, useNavigate } from 'react-router-dom'  // ← ADD THIS
 
 // ── Design tokens (same as EmployeePages) ─────────────────────────────────────────
 const T = {
@@ -439,6 +439,12 @@ export function CounselorDashboard() {
 
 export function CounselorStudents() {
   const { user } = useAuth()
+  const location = useLocation()
+  const deepLink = new URLSearchParams(location.search)
+  const targetStaffId = deepLink.get('staff_id')
+  const targetBatchId = deepLink.get('batch_id')
+  const targetStudentId = deepLink.get('student_id')
+  const targetTab = deepLink.get('tab') || 'overview'
   const [staffList, setStaffList] = useState([])
   const [selectedStaff, setSelectedStaff] = useState(null)
   const [staffStudents, setStaffStudents] = useState([])
@@ -478,6 +484,10 @@ export function CounselorStudents() {
       )
       setStaffList(staffWithCounts)
       setViewMode('staff')
+      if (targetStaffId) {
+        const targetStaff = staffWithCounts.find(staff => String(staff.id) === String(targetStaffId))
+        if (targetStaff) loadStaffDetails(targetStaff, { fromNotification: true })
+      }
     } catch (err) {
       toast.error("Failed to load staff data")
     } finally {
@@ -485,13 +495,25 @@ export function CounselorStudents() {
     }
   }
 
-  const loadStaffDetails = async (staff) => {
+  const loadStaffDetails = async (staff, options = {}) => {
     setLoading(true)
     setSelectedStaff(staff)
     setBatchViewMode('batches')
     setSelectedBatch(null)
 
     try {
+      if (options.fromNotification && targetStudentId) {
+        try {
+          setViewMode('details')
+          const detailRes = await api.get(`/counselor/students/${targetStudentId}/detail/`)
+          setSelectedStudent(detailRes.data)
+          setModalOpen(true)
+          setLoading(false)
+        } catch (err) {
+          console.error('Counselor notification detail error:', err)
+        }
+      }
+
       // Fetch ALL students directly assigned to this staff (for total count)
       const allStudentsRes = await api.get(`/students/?assigned_staff=${staff.id}`)
       const allDirectStudents = allStudentsRes.data.results || allStudentsRes.data || []
@@ -575,6 +597,13 @@ export function CounselorStudents() {
       setStaffBatches(batchesWithFilteredStudents)
       setStaffStudents(allUniqueStudents)
       setViewMode('details')
+      if (options.fromNotification && targetBatchId) {
+        const targetBatch = batchesWithFilteredStudents.find(batch => String(batch.id) === String(targetBatchId))
+        if (targetBatch) {
+          setSelectedBatch(targetBatch)
+          setBatchViewMode('students')
+        }
+      }
 
       // Log for debugging
       console.log('Batches with students:', batchesWithFilteredStudents.map(b => ({
@@ -583,7 +612,9 @@ export function CounselorStudents() {
         students: b.students.map(s => s.first_name)
       })))
 
-      toast.success(`Loaded ${batches.length} batches with ${allUniqueStudents.length} total students for ${staff.first_name}`)
+      if (!options.fromNotification) {
+        toast.success(`Loaded ${batches.length} batches with ${allUniqueStudents.length} total students for ${staff.first_name}`)
+      }
     } catch (err) {
       console.error("Error loading staff details:", err)
       toast.error("Failed to load staff details")
@@ -598,7 +629,7 @@ export function CounselorStudents() {
     } else {
       setLoading(false)
     }
-  }, [counselorBranch])
+  }, [counselorBranch, location.search])
 
   const formatDate = (dateStr) => {
     if (!dateStr) return '—'
@@ -624,7 +655,7 @@ export function CounselorStudents() {
     setModalOpen(true)
   }
 
-  if (loading) return <div className="counselor-root"><Styles /><Spin /></div>
+  if (loading && !targetStudentId) return <div className="counselor-root"><Styles /><Spin /></div>
 
   if (!counselorBranch) {
     return (
@@ -899,14 +930,19 @@ export function CounselorStudents() {
         student={selectedStudent}
         onClose={() => setModalOpen(false)}
         formatDate={formatDate}
+        initialTab={targetTab}
       />
     </div>
   )
 }
 
 // ── STUDENT DETAIL MODAL COMPONENT ──────────────────────────────────────────
-function StudentDetailModal({ open, student, onClose, formatDate }) {
-  const [modalTab, setModalTab] = useState('overview')
+function StudentDetailModal({ open, student, onClose, formatDate, initialTab = 'overview' }) {
+  const [modalTab, setModalTab] = useState(initialTab || 'overview')
+
+  useEffect(() => {
+    if (open) setModalTab(initialTab || 'overview')
+  }, [open, initialTab])
 
   if (!student) return null
 

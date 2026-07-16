@@ -774,9 +774,15 @@ class SessionNotification ( models.Model ) :
             ('session_completed' , 'Session Completed') ,
             ('doubt_raised' , 'Doubt Raised') ,
             ('doubt_resolved' , 'Doubt Resolved') ,
+            ('leave_alert' , 'Leave Alert') ,
+            ('assignment' , 'Assignment') ,
+            ('quiz_result' , 'Quiz Result') ,
+            ('leave_application' , 'Leave Application') ,
+            ('announcement' , 'Announcement') ,
+            ('support' , 'Support') ,
     )
     
-    session = models.ForeignKey ( 'CourseSession' , on_delete = models.CASCADE )
+    session = models.ForeignKey ( 'CourseSession' , on_delete = models.CASCADE , null = True , blank = True )
     from_user = models.ForeignKey ( User , related_name = 'sent_notifications' , on_delete = models.CASCADE )
     to_user = models.ForeignKey ( User , related_name = 'received_notifications' , on_delete = models.CASCADE )
     notification_type = models.CharField ( max_length = 50 , choices = NOTIFICATION_TYPES )

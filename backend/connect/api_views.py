@@ -1410,6 +1410,15 @@ class BatchCreateView(APIView):
         if logsheet_file:
             batch.course_logsheet = logsheet_file
         batch.save()
+        if faculty.user:
+            _queue_user_notification(
+                faculty.user,
+                request.user,
+                'assignment',
+                'New Batch Assigned',
+                f"New Batch Assigned: {batch.batch_number} has been assigned to you.",
+                True,
+            )
 
         return Response({
             'message': f"Batch '{batch_number}' created successfully!",
@@ -1806,6 +1815,20 @@ def assign_staff_to_student(request, student_id):
             # -------------------------------------------------------------
 
         student.save()
+        recipients = []
+        if student.assigned_staff and student.assigned_staff.user:
+            recipients.append(student.assigned_staff.user)
+        if student.assigned_batch and student.assigned_batch.faculty and student.assigned_batch.faculty.user:
+            recipients.append(student.assigned_batch.faculty.user)
+        for recipient in set(recipients):
+            _queue_user_notification(
+                recipient,
+                request.user,
+                'assignment',
+                'New Student Assigned',
+                f"New Student Assigned: {student.first_name} {student.last_name or ''} has been assigned to batch {student.assigned_batch.batch_number if student.assigned_batch else 'N/A'}.",
+                True,
+            )
         return Response({'message': 'Assigned successfully.', 'student': StudentSerializer(student).data})
 
     except (Students.DoesNotExist, Employee.DoesNotExist, Batches.DoesNotExist):
@@ -1868,6 +1891,206 @@ def AttendanceListView(request):
     return Response({'results': serializer.data})
 
 
+LONG_ABSENT_DAYS = 4
+
+
+def _full_name(first_name='', last_name=''):
+    return ' '.join(part for part in [first_name, last_name] if part).strip()
+
+
+def _employee_name(employee):
+    if not employee:
+        return 'Unassigned Mentor'
+    return _full_name(employee.first_name, employee.last_name) or employee.user.username
+
+
+def _student_name(student):
+    return _full_name(student.first_name, student.last_name) or student.student_id
+
+
+def _branch_match_values(branch):
+    value = (branch or '').strip()
+    if not value:
+        return []
+    compact = re.sub(r'\s+', '', value).lower()
+    known = {
+        '100ft': ['100ft', '100ft Road', '100ft road', '100 feet', '100 feet road'],
+        'hopes': ['hopes', 'Hopes', 'Hopes College', 'hopes college'],
+        'kuniyamuthur': ['kuniyamuthur', 'Kuniyamuthur'],
+    }
+    for key, values in known.items():
+        compact_values = {re.sub(r'\s+', '', item).lower() for item in values}
+        if compact == re.sub(r'\s+', '', key).lower() or compact in compact_values:
+            return values
+    return [value]
+
+
+def _has_four_day_absent_streak(student, attendance_date):
+    records = list(
+        StudentAttendance.objects.filter(student=student, date__lte=attendance_date)
+        .only('date', 'status')
+        .order_by('-date')[:LONG_ABSENT_DAYS]
+    )
+    if len(records) < LONG_ABSENT_DAYS:
+        return False
+    for index, record in enumerate(records):
+        if record.date != attendance_date - timedelta(days=index):
+            return False
+        if str(record.status).lower() != 'absent':
+            return False
+    return True
+
+
+def _queue_user_notification(to_user, from_user, notification_type, title, message, requires_action=False, dedupe_today=True):
+    if not to_user:
+        return 0
+    existing = SessionNotification.objects.filter(
+        to_user=to_user,
+        notification_type=notification_type,
+        message=message,
+    )
+    if dedupe_today:
+        existing = existing.filter(created_at__date=timezone.localdate())
+    if existing.exists():
+        return 0
+    SessionNotification.objects.create(
+        from_user=from_user,
+        to_user=to_user,
+        user=to_user,
+        notification_type=notification_type,
+        title=title,
+        message=message,
+        requires_action=requires_action,
+    )
+    return 1
+
+
+def _queue_leave_alert(to_user, from_user, message):
+    return _queue_user_notification(to_user, from_user, 'leave_alert', 'Leave Alert', message, True, False)
+
+
+def _send_long_absence_notifications(student, batch, staff, from_user, attendance_date):
+    if not _has_four_day_absent_streak(student, attendance_date):
+        return 0
+
+    student_display = _student_name(student)
+    mentor = student.assigned_staff or getattr(student.assigned_batch, 'faculty', None) or getattr(batch, 'faculty', None) or staff
+    mentor_display = _employee_name(mentor)
+    start_date = attendance_date - timedelta(days=LONG_ABSENT_DAYS - 1)
+    date_range = f"from {start_date.strftime('%d %b %Y')} to {attendance_date.strftime('%d %b %Y')}"
+    sent_count = 0
+
+    admin_message = (
+        f"Leave Alert: Student {student_display}, under Mentor {mentor_display}, has been on continuous leave for "
+        f"{LONG_ABSENT_DAYS} consecutive days ({date_range}). Please review the student's attendance."
+    )
+    counselor_message = (
+        f"Leave Alert: Student {student_display}, under Mentor {mentor_display}, has been on continuous leave for "
+        f"{LONG_ABSENT_DAYS} consecutive days ({date_range}). Please follow up with the student."
+    )
+    mentor_message = (
+        f"Leave Alert: Your student {student_display} has been on continuous leave for {LONG_ABSENT_DAYS} "
+        f"consecutive days ({date_range}). Please contact the student and update the status."
+    )
+    student_message = (
+        f"Leave Alert: You have been on continuous leave for {LONG_ABSENT_DAYS} consecutive days. "
+        f"Leave duration: {date_range}. Please contact your Mentor and update your leave status."
+    )
+
+    for admin_user in User.objects.filter(Q(is_staff=True) | Q(is_superuser=True)).distinct():
+        sent_count += _queue_leave_alert(admin_user, from_user, admin_message)
+
+    branch_values = _branch_match_values(student.branch or getattr(batch, 'branch', ''))
+    counselor_qs = Employee.objects.filter(designation__iexact='counselor')
+    if branch_values:
+        counselor_qs = counselor_qs.filter(branch__in=branch_values)
+    for counselor in counselor_qs.select_related('user').distinct():
+        sent_count += _queue_leave_alert(counselor.user, from_user, counselor_message)
+
+    if mentor:
+        sent_count += _queue_leave_alert(mentor.user, from_user, mentor_message)
+    if student.user:
+        sent_count += _queue_leave_alert(student.user, from_user, student_message)
+
+    return sent_count
+
+
+def _sync_long_absence_notifications():
+    student_ids = StudentAttendance.objects.filter(status__iexact='Absent').values_list('student_id', flat=True).distinct()
+    created = 0
+    for student_id in student_ids:
+        latest_absent = (
+            StudentAttendance.objects.filter(student_id=student_id, status__iexact='Absent')
+            .select_related('student', 'batch', 'staff', 'staff__user')
+            .order_by('-date')
+            .first()
+        )
+        if not latest_absent:
+            continue
+        from_user = latest_absent.staff.user if latest_absent.staff_id else User.objects.filter(is_superuser=True).first()
+        if not from_user:
+            continue
+        created += _send_long_absence_notifications(
+            latest_absent.student,
+            latest_absent.batch,
+            latest_absent.staff,
+            from_user,
+            latest_absent.date,
+        )
+    return created
+
+
+def _student_from_leave_alert_message(message):
+    match = re.search(r'Leave Alert: Student\s+(.+?),\s+under Mentor', message or '')
+    if not match:
+        return None
+    alert_name = re.sub(r'\s+', ' ', match.group(1)).strip().lower()
+    for student in Students.objects.select_related('assigned_staff', 'assigned_batch', 'assigned_batch__faculty'):
+        student_name = re.sub(r'\s+', ' ', _student_name(student)).strip().lower()
+        if student_name == alert_name:
+            return student
+    return None
+
+
+def _notification_action_url(notification, request_user):
+    if notification.notification_type == 'leave_alert':
+        student = _student_from_leave_alert_message(notification.message)
+        if not student:
+            return ''
+        mentor = student.assigned_staff or getattr(student.assigned_batch, 'faculty', None)
+        batch = student.assigned_batch
+        employee = Employee.objects.filter(user=request_user).first()
+        if is_admin_user(request_user):
+            params = {
+                'branch': student.branch or getattr(batch, 'branch', ''),
+                'staff_id': mentor.id if mentor else '',
+                'batch_id': batch.id if batch else '',
+                'student_id': student.id,
+                'tab': 'attendance',
+            }
+            query = '&'.join(
+                f"{key}={requests.utils.quote(str(value))}"
+                for key, value in params.items()
+                if value
+            )
+            return f"/admin/attendance?{query}" if query else '/admin/attendance'
+        if employee and (employee.designation or '').lower() == 'counselor':
+            params = {
+                'staff_id': mentor.id if mentor else '',
+                'batch_id': batch.id if batch else '',
+                'student_id': student.id,
+                'tab': 'attendance',
+            }
+            query = '&'.join(
+                f"{key}={requests.utils.quote(str(value))}"
+                for key, value in params.items()
+                if value
+            )
+            return f"/counselor/students?{query}" if query else '/counselor/students'
+        return '/employee/attendance-history'
+    return ''
+
+
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
 def mark_attendance(request):
@@ -1894,23 +2117,27 @@ def mark_attendance(request):
         return Response({'error': 'Staff not found'}, status=404)
 
     created = []
+    leave_alerts = 0
     for item in attendance_data:
         try:
             student = Students.objects.get(id=item['student_id'])
+            status_value = item.get('status', 'Present')
             att, _ = StudentAttendance.objects.update_or_create(
                 student=student,
                 date=attendance_date,
                 defaults={
                     'batch': batch,
                     'staff': staff,
-                    'status': item.get('status', 'Present'),
+                    'status': status_value,
                     'remarks': item.get('remarks', ''),
                 }
             )
             created.append(AttendanceSerializer(att).data)
+            if str(status_value).lower() == 'absent':
+                leave_alerts += _send_long_absence_notifications(student, batch, staff, request.user, attendance_date)
         except Students.DoesNotExist:
             pass
-    return Response({'message': f'{len(created)} records saved.', 'records': created})
+    return Response({'message': f'{len(created)} records saved.', 'records': created, 'leave_alerts': leave_alerts})
 
 
 @api_view(['GET'])
@@ -2401,6 +2628,14 @@ class StudentLeaveListView(generics.ListCreateAPIView):
             )
             
             print(f"Leave application created successfully! ID: {leave.id}")
+            _queue_user_notification(
+                student.assigned_staff.user,
+                request.user,
+                'leave_application',
+                'Leave Application',
+                f"Leave Application: {student.first_name} {student.last_name or ''} requested {number_of_days} day(s) leave from {start_date} to {end_date}.",
+                True,
+            )
             
             # Return response
             serializer = self.get_serializer(leave)
@@ -2463,7 +2698,18 @@ class StudentSupportListView(generics.ListCreateAPIView):
         return qs
 
     def perform_create(self, serializer):
-        serializer.save(student=self.request.user)
+        support = serializer.save(student=self.request.user)
+        student = Students.objects.filter(user=self.request.user).select_related('assigned_staff__user').first()
+        if student and student.assigned_staff and student.assigned_staff.user:
+            _queue_user_notification(
+                student.assigned_staff.user,
+                self.request.user,
+                'support',
+                'Student Support Request',
+                f"Support: {student.first_name} {student.last_name or ''} submitted a support request.",
+                True,
+            )
+        return support
 
 
 class CounselorSupportListView(generics.ListCreateAPIView):
@@ -2518,7 +2764,26 @@ class AnnouncementCreateView(generics.CreateAPIView):
     permission_classes = [IsAuthenticated]
 
     def perform_create(self, serializer):
-        serializer.save(created_by=self.request.user)
+        announcement = serializer.save(created_by=self.request.user)
+        recipient_type = (announcement.recipient_type or '').lower()
+        notify_mentors = recipient_type in ['all', 'staff', 'mentors']
+        notify_counselors = recipient_type in ['all', 'staff', 'counselors']
+        employee_filter = Q()
+        if notify_mentors:
+            employee_filter |= Q(designation__iexact='mentor') | Q(designation__iexact='trainer')
+        if notify_counselors:
+            employee_filter |= Q(designation__iexact='counselor')
+        if employee_filter:
+            for employee in Employee.objects.filter(employee_filter).select_related('user').distinct():
+                _queue_user_notification(
+                    employee.user,
+                    self.request.user,
+                    'announcement',
+                    'Admin Announcement',
+                    f"Admin Announcement: {announcement.title}",
+                    False,
+                )
+        return announcement
 
 
 def _admin_announcement_visible_to_student(announcement, student):
@@ -3744,18 +4009,6 @@ def student_mark_completed(request):
                 'course_completed': True
             })
         
-        # Notify trainer for individual session completion
-        emp = session.batch.faculty
-        if emp and emp.user:
-            SessionNotification.objects.create(
-                session=session,
-                from_user=request.user,
-                to_user=emp.user,
-                notification_type='session_completed',
-                message=f"{student.first_name} {student.last_name or ''} has confirmed completion of Session {session.session_number}: '{session.title}'.",
-                title=f"Session {session.session_number} Confirmed by Student"
-            )
-
         return Response({
             'success': True, 
             'message': 'Session marked as completed!',
@@ -3919,9 +4172,15 @@ def get_staff_doubts_detail(request):
 @permission_classes([IsAuthenticated])
 def get_student_notifications(request):
     try:
-        notifs = SessionNotification.objects.filter(
-            to_user=request.user
-        ).order_by('-created_at')[:50]
+        sync_key = 'notifications_long_absence_sync'
+        if not cache.get(sync_key):
+            _sync_long_absence_notifications()
+            cache.set(sync_key, True, 300)
+        notifs = SessionNotification.objects.filter(to_user=request.user)
+        employee = Employee.objects.filter(user=request.user).first()
+        if employee:
+            notifs = notifs.exclude(notification_type='session_completed')
+        notifs = notifs.order_by('-created_at')[:50]
         data = [{
             'id': n.id,
             'type': n.notification_type,
@@ -3931,6 +4190,7 @@ def get_student_notifications(request):
             'requires_action': n.requires_action,
             'created_at': n.created_at.strftime('%d %b %Y, %H:%M'),
             'session_id': n.session.id if n.session else None,
+            'action_url': _notification_action_url(n, request.user),
         } for n in notifs]
         return Response(data)
     except Exception as e:
@@ -3947,6 +4207,13 @@ def mark_notification_read(request, notif_id):
         return Response({'success': True})
     except SessionNotification.DoesNotExist:
         return Response({'error': 'Not found'}, status=404)
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def mark_all_notifications_read(request):
+    updated = SessionNotification.objects.filter(to_user=request.user, is_read=False).update(is_read=True)
+    return Response({'success': True, 'updated': updated})
 
 
 # -- COMPLETED STUDENTS --------------------------------------------------------
@@ -4453,6 +4720,75 @@ def counselor_student_details(request):
     except Employee.DoesNotExist:
         students = Students.objects.all().select_related('assigned_batch', 'assigned_staff')
     return Response(StudentSerializer(students, many=True).data)
+
+
+def _student_detail_payload(student):
+    att_qs = list(StudentAttendance.objects.filter(student=student).select_related('batch', 'staff').order_by('-date')[:50])
+    total_att = len(att_qs)
+    present_att = len([a for a in att_qs if str(a.status).lower() == 'present'])
+    test_qs = list(TestResult.objects.filter(student=student).select_related('test').order_by('-submitted_at'))
+    quiz_qs = list(QuizAttempt.objects.filter(student=student).select_related('quiz').order_by('-submitted_at'))
+    leave_qs = list(StudentLeaveApplication.objects.filter(student=student).order_by('-applied_at'))
+    progress_qs = Student_Session_Progress.objects.filter(student=student)
+    total_sessions = progress_qs.count()
+    sessions_completed = progress_qs.filter(completed=True).count()
+    base = StudentSerializer(student).data
+    base.update({
+        'attendance_records': [{
+            'date': str(a.date),
+            'status': a.status,
+            'batch_number': a.batch.batch_number if a.batch else '',
+            'remarks': a.remarks or '-',
+            'marked_by': f"{a.staff.first_name} {a.staff.last_name}" if a.staff else '-',
+        } for a in att_qs],
+        'attendance_total': total_att,
+        'attendance_present': present_att,
+        'attendance_percentage': round((present_att / total_att * 100) if total_att else 0, 1),
+        'test_results': [{
+            'test_name': t.test.title if t.test else '',
+            'score': t.score,
+            'percentage': t.percentage,
+            'submitted_at': str(t.submitted_at)[:10] if t.submitted_at else '',
+        } for t in test_qs],
+        'test_count': len(test_qs),
+        'average_score': round(sum(t.percentage for t in test_qs) / len(test_qs), 1) if test_qs else 0,
+        'quiz_results': [{
+            'quiz_title': a.quiz.title if a.quiz else '—',
+            'score': a.score or 0,
+            'total_marks': a.quiz.total_marks if a.quiz else 0,
+            'percentage': float(a.percentage or 0),
+            'passing_marks': a.quiz.passing_marks if a.quiz else 50,
+            'submitted_at': str(a.submitted_at)[:10] if a.submitted_at else '',
+        } for a in quiz_qs],
+        'quiz_count': len(quiz_qs),
+        'leave_requests': [{
+            'leave_type': l.leave_type,
+            'start_date': str(l.start_date),
+            'end_date': str(l.end_date),
+            'status': l.status,
+            'reason': l.reason,
+        } for l in leave_qs],
+        'leaves_count': len(leave_qs),
+        'sessions_completed': sessions_completed,
+        'total_sessions': total_sessions,
+        'progress_percentage': round((sessions_completed / total_sessions * 100) if total_sessions else 0, 1),
+        'doubts_count': progress_qs.filter(has_doubt=True).count(),
+        'resolved_doubts': progress_qs.filter(doubt_resolved=True).count(),
+    })
+    return base
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def counselor_student_detail(request, student_id):
+    try:
+        counselor = Employee.objects.get(user=request.user, designation__iexact='counselor')
+        student = Students.objects.select_related('assigned_batch', 'assigned_staff').get(id=student_id, branch=counselor.branch)
+        return Response(_student_detail_payload(student))
+    except Employee.DoesNotExist:
+        return Response({'error': 'Counselor access required.'}, status=403)
+    except Students.DoesNotExist:
+        return Response({'error': 'Student not found'}, status=404)
 
 
 
@@ -7379,6 +7715,23 @@ def student_take_quiz(request, quiz_id):
                 is_correct=is_correct,
                 marks_obtained=marks_obtained
             )
+
+        quiz_recipients = []
+        if quiz.created_by and quiz.created_by.user:
+            quiz_recipients.append(quiz.created_by.user)
+        if quiz.batch and quiz.batch.faculty and quiz.batch.faculty.user:
+            quiz_recipients.append(quiz.batch.faculty.user)
+        if student.assigned_staff and student.assigned_staff.user:
+            quiz_recipients.append(student.assigned_staff.user)
+        for recipient in set(quiz_recipients):
+            _queue_user_notification(
+                recipient,
+                request.user,
+                'quiz_result',
+                'Quiz Result Submitted',
+                f"Quiz Result: {student.first_name} {student.last_name or ''} completed {quiz.title} with {percentage}%.",
+                False,
+            )
         
         return Response({
             'attempt_id': attempt.id,
@@ -8928,6 +9281,20 @@ class CounselorAnnouncementCreateView(generics.CreateAPIView):
             from connect.models import Students
             students = Students.objects.filter(id__in=specific_student_ids)
             announcement.specific_students.set(students)
+
+        branch_values = _branch_match_values(emp.branch)
+        mentors = Employee.objects.filter(Q(designation__iexact='mentor') | Q(designation__iexact='trainer'))
+        if branch_values:
+            mentors = mentors.filter(branch__in=branch_values)
+        for mentor in mentors.select_related('user').distinct():
+            _queue_user_notification(
+                mentor.user,
+                user,
+                'announcement',
+                'Counselor Announcement',
+                f"Counselor Announcement: {announcement.title}",
+                False,
+            )
         
         return announcement
 
