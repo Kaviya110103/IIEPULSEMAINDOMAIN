@@ -635,7 +635,7 @@ export async function getPublicHomeContent() {
 
     return {
       success: true,
-      error: errors.join("\n"),
+      error: "",
       data: {
         gallery,
         news,

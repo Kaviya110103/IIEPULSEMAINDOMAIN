@@ -426,14 +426,42 @@ export function StudentSectionHeader({ title, count, actions }) {
   )
 }
 
+const STUDENT_FEEDBACK_FORM_URL = 'https://docs.google.com/forms/d/e/1FAIpQLScO29CvpRNB0057OxNROPr0IVPH6dAZZpueHFRRespT0g1E_A/viewform'
+const STUDENT_FEEDBACK_EMBED_URL = `${STUDENT_FEEDBACK_FORM_URL}?embedded=true`
+const STUDENT_FEEDBACK_INTERVAL_MS = 20 * 24 * 60 * 60 * 1000
+const STUDENT_FEEDBACK_LAST_PROMPT_KEY = 'iie_student_feedback_last_prompt_at'
+
 export function StudentDashboard() {
   const [data, setData] = useState(null)
   const [loading, setLoading] = useState(true)
+  const [showFeedbackPrompt, setShowFeedbackPrompt] = useState(false)
+  const feedbackTimerRef = useRef(null)
   const navigate = useNavigate()  // ← ADD THIS
 
   useEffect(() => {
     api.get('/dashboard/student/').then(r => setData(r.data)).finally(() => setLoading(false))
   }, [])
+
+  const scheduleFeedbackPrompt = (delay = STUDENT_FEEDBACK_INTERVAL_MS) => {
+    if (feedbackTimerRef.current) clearTimeout(feedbackTimerRef.current)
+    feedbackTimerRef.current = setTimeout(() => setShowFeedbackPrompt(true), delay)
+  }
+
+  useEffect(() => {
+    const lastPromptAt = Number(localStorage.getItem(STUDENT_FEEDBACK_LAST_PROMPT_KEY) || 0)
+    const elapsed = Date.now() - lastPromptAt
+    const delay = lastPromptAt ? Math.max(STUDENT_FEEDBACK_INTERVAL_MS - elapsed, 0) : STUDENT_FEEDBACK_INTERVAL_MS
+    scheduleFeedbackPrompt(delay)
+    return () => {
+      if (feedbackTimerRef.current) clearTimeout(feedbackTimerRef.current)
+    }
+  }, [])
+
+  const closeFeedbackPrompt = () => {
+    localStorage.setItem(STUDENT_FEEDBACK_LAST_PROMPT_KEY, String(Date.now()))
+    setShowFeedbackPrompt(false)
+    scheduleFeedbackPrompt()
+  }
 
   if (loading) return <div className="student-root"><StudentStyles /><StudentSpin /></div>
 
@@ -456,6 +484,13 @@ export function StudentDashboard() {
         title={`👋 Welcome, ${data?.student?.first_name || 'Student'}!`}
         sub={`Student ID: ${data?.student?.student_id || '—'} · Batch: ${data?.student?.assigned_batch_number || 'Not assigned'}`}
       />
+      <StudentModal open={showFeedbackPrompt} onClose={closeFeedbackPrompt} title="Student Feedback" size="xl">
+        <iframe
+          title="Student Feedback Form"
+          src={STUDENT_FEEDBACK_EMBED_URL}
+          style={{ width: '100%', height: '72vh', border: 0, borderRadius: 12, background: '#fff' }}
+        />
+      </StudentModal>
       <div className="student-stat-grid">
         {stats.map((stat, idx) => (
           <div

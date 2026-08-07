@@ -2221,6 +2221,11 @@ function StaffDetailsView({ staff, students, data, onBack, targetStudentId, targ
     }
   }
 
+  const formatBatchDuration = (batch) => {
+    if (!batch?.start_date || !batch?.end_date) return 'Duration not set'
+    return `${formatDate(batch.start_date)} - ${formatDate(batch.end_date)}`
+  }
+
   // Fetch batches and students for this staff with proper filtering
   useEffect(() => {
     const fetchStaffData = async () => {
@@ -2344,6 +2349,21 @@ function StaffDetailsView({ staff, students, data, onBack, targetStudentId, targ
     setSelectedStudent(targetStudent)
     setModalOpen(true)
   }, [loading, targetStudentId, targetBatchId, batches, batchStudents])
+
+  useEffect(() => {
+    if (loading || targetStudentId || !targetBatchId || batches.length === 0) return
+    const targetBatch = batches.find(batch => String(batch.id) === String(targetBatchId))
+    if (!targetBatch) return
+    setSelectedBatch(targetBatch)
+    setViewMode('students')
+    if (targetTab === 'attendance') {
+      const firstStudent = (batchStudents[targetBatch.id] || [])[0]
+      if (firstStudent) {
+        setSelectedStudent(firstStudent)
+        setModalOpen(true)
+      }
+    }
+  }, [loading, targetStudentId, targetBatchId, targetTab, batches, batchStudents])
 
   const handleBatchClick = (batch) => {
     setSelectedBatch(batch)
@@ -2469,6 +2489,7 @@ function StaffDetailsView({ staff, students, data, onBack, targetStudentId, targ
                         <AdminBadge text={`${studentCount} Students`} variant="info" />
                         <AdminBadge text={batch.branch} variant="primary" />
                         <AdminBadge text={batch.batch_timing || 'Timing'} variant="primary" />
+                        <AdminBadge text={formatBatchDuration(batch)} variant="teal" />
                       </div>
                     </div>
                     <i className="fas fa-chevron-right" style={{ color: T.slateLight, fontSize: 14 }} />
@@ -2490,6 +2511,8 @@ function StaffDetailsView({ staff, students, data, onBack, targetStudentId, targ
               <div>
                 <div style={{ fontWeight: 700, color: 'white', fontSize: 16 }}>{selectedBatch.batch_number}</div>
                 <div style={{ fontSize: 12, color: T.slateLight, marginTop: 2 }}>
+                  Duration: {formatBatchDuration(selectedBatch)}
+                  <br />
                   {selectedBatch.batch_timing || '—'} • {selectedBatch.branch}
                 </div>
               </div>

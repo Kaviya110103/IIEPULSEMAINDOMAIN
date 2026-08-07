@@ -32,6 +32,8 @@ urlpatterns = [
     path('api/dashboard/admin/', v.AdminDashboardView.as_view()),
     path('api/dashboard/employee/', v.EmployeeDashboardView.as_view()),
     path('api/dashboard/student/', v.StudentDashboardView.as_view()),
+    path('api/student/login-rating/', v.student_weekly_login_rating),
+    path('api/student/login-rating/history/', v.student_weekly_login_rating_history),
     path('api/dashboard/counselor/', v.CounselorDashboardView.as_view()),
 
     # â”€â”€ ID GENERATORS â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€

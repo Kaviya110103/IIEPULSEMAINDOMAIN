@@ -23,6 +23,48 @@ const T = {
   shadowMd: '0 8px 40px rgba(15,27,45,0.14)',
 }
 
+const parseCourseDuration = (duration) => {
+  const value = String(duration || '').trim().toLowerCase()
+  const match = value.match(/^([1-9]\d*)\s*(day|days|month|months)$/)
+  if (!match) {
+    return {
+      error: 'Selected course has missing or invalid duration. Please update the course duration first.',
+    }
+  }
+  return { amount: Number(match[1]), unit: match[2] }
+}
+
+const formatDateInput = (date) => {
+  const year = date.getFullYear()
+  const month = String(date.getMonth() + 1).padStart(2, '0')
+  const day = String(date.getDate()).padStart(2, '0')
+  return `${year}-${month}-${day}`
+}
+
+const addCalendarMonths = (startDate, months) => {
+  const [year, month, day] = startDate.split('-').map(Number)
+  const targetMonthIndex = month - 1 + months
+  const targetYear = year + Math.floor(targetMonthIndex / 12)
+  const targetMonth = ((targetMonthIndex % 12) + 12) % 12
+  const lastDay = new Date(targetYear, targetMonth + 1, 0).getDate()
+  return formatDateInput(new Date(targetYear, targetMonth, Math.min(day, lastDay)))
+}
+
+const calculateBatchEndDate = (duration, startDate) => {
+  if (!startDate) return { endDate: '', error: '' }
+  const parsed = parseCourseDuration(duration)
+  if (parsed.error) return { endDate: '', error: parsed.error }
+
+  if (parsed.unit.startsWith('month')) {
+    return { endDate: addCalendarMonths(startDate, parsed.amount), error: '' }
+  }
+
+  const [year, month, day] = startDate.split('-').map(Number)
+  const date = new Date(year, month - 1, day)
+  date.setDate(date.getDate() + parsed.amount)
+  return { endDate: formatDateInput(date), error: '' }
+}
+
 const css = `
   @import url('https://fonts.googleapis.com/css2?family=Playfair+Display:wght@600;700&family=DM+Sans:wght@300;400;500;600&display=swap');
 
@@ -1193,13 +1235,25 @@ export function CoursesList() {
         {loading ? <Spin /> : data.length === 0 ? <Empty msg="No courses found." /> : (
           <div style={{ overflowX: 'auto' }}>
             <table className="ls-table">
+              <thead>
+                <tr>
+                  <th>#</th>
+                  <th>Course</th>
+                  <th>Type</th>
+                  <th>Duration</th>
                   <th>Fee</th>
+                  <th>Logsheet</th>
+                  <th>Created</th>
+                  <th>Actions</th>
+                </tr>
+              </thead>
               <tbody>
                 {data.map((c, i) => (
                   <tr key={c.id}>
                     <td style={{ color: T.slate, fontSize: 12 }}>{i + 1}</td>
                     <td style={{ fontWeight: 600 }}>{c.course_name}</td>
                     <td><Badge text={c.course_type} variant={typeVar[c.course_type] || 'default'} /></td>
+                    <td style={{ fontSize: 13, color: T.slate }}>{c.duration || 'Duration missing'}</td>
                     <td style={{ fontSize: 13, fontWeight: 600, color: T.sage }}>
                       {c.fee ? `₹${Number(c.fee).toLocaleString('en-IN')}` : '—'}
                     </td>
@@ -1238,6 +1292,7 @@ function CourseForm({ item, onClose, onSaved }) {
   const [form, setForm] = useState({
     course_name: item?.course_name || '',
     course_type: item?.course_type || '',
+    duration: item?.duration || '',
     fee: item?.fee || ''
   })
   const [file, setFile] = useState(null)
@@ -1268,6 +1323,7 @@ function CourseForm({ item, onClose, onSaved }) {
       const fd = new FormData()
       fd.append('course_name', form.course_name)
       if (form.course_type) fd.append('course_type', form.course_type)
+      fd.append('duration', form.duration)
       if (form.fee) fd.append('fee', form.fee)
       if (file) fd.append('course_logsheet', file)
       if (item) { await api.patch(`/courses/${item.id}/`, fd); toast.success('Course updated!') }
@@ -1275,7 +1331,7 @@ function CourseForm({ item, onClose, onSaved }) {
       onSaved()
     } catch (err) {
       const d = err.response?.data || {}
-      toast.error(d.course_name?.[0] || d.detail || 'Save failed')
+      toast.error(d.duration?.[0] || d.course_name?.[0] || d.detail || 'Save failed')
     } finally { setSaving(false) }
   }
 
@@ -1325,6 +1381,15 @@ function CourseForm({ item, onClose, onSaved }) {
             value={form.fee}
             onChange={e => setForm(p => ({ ...p, fee: e.target.value }))}
             placeholder="e.g. 15000"
+          />
+        </FG>
+
+        <FG label="Course Duration" required hint="Examples: 2 months, 45 days">
+          <Inp
+            value={form.duration}
+            onChange={e => setForm(p => ({ ...p, duration: e.target.value }))}
+            placeholder="e.g. 2 months"
+            required
           />
         </FG>
 
@@ -1631,6 +1696,7 @@ function BatchForm({ item, counselorBranch, onClose, onSaved }) {
   item?.course_logsheet_url || item?.course_logsheet || null
 )
   const [courseFee, setCourseFee] = useState(null)   // ← ADD THIS
+  const [durationError, setDurationError] = useState('')
   const f = (k, v) => setForm(p => ({ ...p, [k]: v }))
 
   useEffect(() => {
@@ -1674,9 +1740,30 @@ api.get(url).then(r => setEmps(r.data.results || r.data))
     setLogsheetFile(null)
   }
 
+  useEffect(() => {
+    if (!form.course_name || !form.start_date) {
+      setDurationError('')
+      if (!form.start_date && form.end_date) {
+        setForm(p => ({ ...p, end_date: '' }))
+      }
+      return
+    }
+
+    const sel = courses.find(c => String(c.id) === String(form.course_name))
+    if (!sel) return
+
+    const { endDate, error } = calculateBatchEndDate(sel.duration, form.start_date)
+    setDurationError(error)
+    setForm(p => (p.end_date === endDate ? p : { ...p, end_date: endDate }))
+  }, [form.course_name, form.start_date, courses])
+
   const save = async e => {
     e.preventDefault(); setSaving(true)
     try {
+      if (!form.end_date || durationError) {
+        toast.error(durationError || 'Select a course and start date to calculate the end date')
+        return
+      }
       const fd = new FormData()
       Object.entries(form).forEach(([k, v]) => { if (v) fd.append(k, v) })
       if (logsheetFile) {
@@ -1801,7 +1888,10 @@ api.get(url).then(r => setEmps(r.data.results || r.data))
 
           <div>
             <FG label="Start Date" required><Inp type="date" value={form.start_date} onChange={e => f('start_date', e.target.value)} required /></FG>
-            <FG label="End Date" required><Inp type="date" value={form.end_date} onChange={e => f('end_date', e.target.value)} required /></FG>
+            <FG label="End Date" required hint="Calculated from selected course duration">
+              <Inp type="date" value={form.end_date} readOnly required />
+              {durationError && <span className="ls-hint" style={{ color: T.rose }}>{durationError}</span>}
+            </FG>
             <FG label="Branch" required>
               {counselorBranch
                 ? <><Inp value={counselorBranch} readOnly /><span className="ls-hint">Restricted to your branch</span></>

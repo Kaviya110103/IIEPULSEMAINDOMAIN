@@ -46,6 +46,19 @@ type ModuleKey =
   | "contact"
   | "about";
 
+type WeeklyLoginRating = {
+  week_start: string;
+  week_end: string;
+  stars: number;
+  max_stars: number;
+  days: {
+    date: string;
+    day: string;
+    login_count: number;
+    earned: boolean;
+  }[];
+};
+
 const sideNavItems: Array<{
   key: string;
   label: string;
@@ -211,6 +224,7 @@ export default function WelcomeScreen() {
   const { module } = useLocalSearchParams<{ module?: string }>();
   const appLogo = appLogoLight;
   const slideAnim = useRef(new Animated.Value(1)).current;
+  const starAnim = useRef(new Animated.Value(0)).current;
   const [activeModule, setActiveModule] = useState<ModuleKey>("home");
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [gallery, setGallery] = useState<GalleryItem[]>([]);
@@ -224,6 +238,7 @@ export default function WelcomeScreen() {
   const [errorMsg, setErrorMsg] = useState("");
   const [activeNewsIndex, setActiveNewsIndex] = useState(0);
   const [isPrivateUser, setIsPrivateUser] = useState(false);
+  const [loginRating, setLoginRating] = useState<WeeklyLoginRating | null>(null);
   const drawerSwipeResponder = useMemo(
     () =>
       PanResponder.create({
@@ -296,6 +311,15 @@ export default function WelcomeScreen() {
   }, [activeNewsIndex, slideAnim]);
 
   useEffect(() => {
+    Animated.spring(starAnim, {
+      toValue: loginRating?.stars || 0,
+      friction: 6,
+      tension: 70,
+      useNativeDriver: true,
+    }).start();
+  }, [loginRating?.stars, starAnim]);
+
+  useEffect(() => {
     const subscription = BackHandler.addEventListener("hardwareBackPress", () => {
       if (drawerOpen) {
         setDrawerOpen(false);
@@ -360,9 +384,13 @@ export default function WelcomeScreen() {
       setVlogs(result.data.vlogs);
       setNews(result.data.news);
       setCalendarEvents(result.data.calendarEvents || []);
-      setErrorMsg(result.error || "");
+      setErrorMsg("");
     } else {
-      setErrorMsg(result.error || "Could not load updates.");
+      setGallery([]);
+      setVlogs([]);
+      setNews([]);
+      setCalendarEvents([]);
+      setErrorMsg("");
     }
 
     setLoading(false);
@@ -378,6 +406,23 @@ export default function WelcomeScreen() {
   const loadSession = async () => {
     const token = await AsyncStorage.getItem("access_token");
     setIsPrivateUser(!!token);
+    if (!token) {
+      setLoginRating(null);
+      return;
+    }
+
+    try {
+      const response = await api.get("/student/login-rating/");
+      setLoginRating(response.data?.current_week || null);
+    } catch {
+      setLoginRating({
+        week_start: "",
+        week_end: "",
+        stars: 0,
+        max_stars: 5,
+        days: [],
+      });
+    }
   };
 
   const showRegisterPrompt = () => {
@@ -547,19 +592,17 @@ export default function WelcomeScreen() {
             )}
           </View>
 
-          <Pressable
-            style={styles.notificationButton}
-            onPress={() => {
-              if (isPrivateUser) {
-                openModule("announcement");
-              } else {
-                showRegisterPrompt();
-              }
-            }}
-          >
-            <View style={styles.notificationDot} />
-            <Ionicons name="notifications-outline" size={24} color="#5523D2" />
-          </Pressable>
+          {isPrivateUser ? (
+            <WelcomeWeeklyRating
+              rating={loginRating}
+              animatedValue={starAnim}
+              onPress={() => router.push("/login-rating-history" as any)}
+            />
+          ) : (
+            <Pressable style={styles.notificationButton} onPress={showRegisterPrompt}>
+              <Ionicons name="star-outline" size={22} color="#5523D2" />
+            </Pressable>
+          )}
         </View>
 
         {errorMsg ? <ThemedText style={styles.errorText}>{errorMsg}</ThemedText> : null}
@@ -625,6 +668,39 @@ export default function WelcomeScreen() {
         })}
       </View>
     </ThemedView>
+  );
+}
+
+function WelcomeWeeklyRating({
+  rating,
+  animatedValue,
+  onPress,
+}: {
+  rating: WeeklyLoginRating | null;
+  animatedValue: Animated.Value;
+  onPress: () => void;
+}) {
+  const stars = rating?.stars ?? 0;
+  const scale = animatedValue.interpolate({
+    inputRange: [0, 5],
+    outputRange: [0.96, 1.04],
+    extrapolate: "clamp",
+  });
+
+  return (
+    <Pressable style={styles.weeklyRatingCard} onPress={onPress}>
+      <Animated.View style={[styles.weeklyStarsRow, { transform: [{ scale }] }]}>
+        {Array.from({ length: 5 }).map((_, index) => (
+          <Ionicons
+            key={index}
+            name={index < stars ? "star" : "star-outline"}
+            size={13}
+            color={index < stars ? "#F59E0B" : "#D8CFF6"}
+          />
+        ))}
+      </Animated.View>
+      <ThemedText style={styles.weeklyRatingScore}>{stars}/5</ThemedText>
+    </Pressable>
   );
 }
 
@@ -2016,6 +2092,34 @@ const styles = StyleSheet.create({
   logoImage: {
     width: 76,
     height: 76,
+  },
+  weeklyRatingCard: {
+    width: 78,
+    minHeight: 44,
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: 7,
+    paddingVertical: 6,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: "#FDE68A",
+    backgroundColor: "#FFFFFF",
+    shadowColor: "#B45309",
+    shadowOpacity: 0.1,
+    shadowRadius: 8,
+    shadowOffset: { width: 0, height: 4 },
+    elevation: 4,
+  },
+  weeklyRatingScore: {
+    marginTop: 2,
+    color: "#2E1065",
+    fontSize: 11,
+    fontWeight: "900",
+  },
+  weeklyStarsRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 1,
   },
   headerTextLogo: {
     color: "#1F1335",

@@ -640,6 +640,11 @@ export function CounselorStudents() {
     }
   }
 
+  const formatBatchDuration = (batch) => {
+    if (!batch?.start_date || !batch?.end_date) return 'Duration not set'
+    return `${formatDate(batch.start_date)} - ${formatDate(batch.end_date)}`
+  }
+
   const handleBatchClick = (batch) => {
     setSelectedBatch(batch)
     setBatchViewMode('students')
@@ -842,6 +847,7 @@ export function CounselorStudents() {
                     <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
                       <Badge text={`${batch.students?.length || 0} Students`} variant="info" />
                       <Badge text={batch.batch_timing || 'Timing'} variant="primary" />
+                      <Badge text={formatBatchDuration(batch)} variant="teal" />
                     </div>
                   </div>
                   <i className="fas fa-chevron-right" style={{ color: T.slateLight, fontSize: 14 }} />
@@ -862,6 +868,8 @@ export function CounselorStudents() {
               <div>
                 <div style={{ fontWeight: 700, color: 'white', fontSize: 16 }}>{selectedBatch.batch_number}</div>
                 <div style={{ fontSize: 12, color: T.slateLight, marginTop: 2 }}>
+                  Duration: {formatBatchDuration(selectedBatch)}
+                  <br />
                   {selectedBatch.batch_timing || '—'}
                 </div>
               </div>

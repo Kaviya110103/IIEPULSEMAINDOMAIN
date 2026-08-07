@@ -3,6 +3,7 @@ import { useRouter } from "expo-router";
 import React, { useEffect, useMemo, useState } from "react";
 import {
   ActivityIndicator,
+  Animated,
   RefreshControl,
   ScrollView,
   StyleSheet,
@@ -32,6 +33,19 @@ type DashboardData = {
   total_sessions?: number;
 };
 
+type WeeklyLoginRating = {
+  week_start: string;
+  week_end: string;
+  stars: number;
+  max_stars: number;
+  days: {
+    date: string;
+    day: string;
+    login_count: number;
+    earned: boolean;
+  }[];
+};
+
 type SessionItem = {
   id: number;
   session_number: number;
@@ -50,6 +64,8 @@ export default function Home() {
   const [errorMsg, setErrorMsg] = useState("");
   const [dashboard, setDashboard] = useState<DashboardData | null>(null);
   const [sessions, setSessions] = useState<SessionItem[]>([]);
+  const [loginRating, setLoginRating] = useState<WeeklyLoginRating | null>(null);
+  const [starAnim] = useState(() => new Animated.Value(0));
 
   useEffect(() => {
     loadOverviewData();
@@ -58,8 +74,12 @@ export default function Home() {
   const loadOverviewData = async () => {
     try {
       setErrorMsg("");
-      const dashboardResponse = await api.get("/dashboard/student/");
+      const [dashboardResponse, ratingResponse] = await Promise.all([
+        api.get("/dashboard/student/"),
+        api.get("/student/login-rating/"),
+      ]);
       setDashboard(dashboardResponse.data);
+      setLoginRating(ratingResponse.data?.current_week || null);
 
       try {
         const sessionResponse = await api.get("sessions/student/");
@@ -122,6 +142,17 @@ export default function Home() {
     return next || null;
   }, [sortedSessions]);
 
+  const weeklyStars = loginRating?.stars ?? 0;
+
+  useEffect(() => {
+    Animated.spring(starAnim, {
+      toValue: weeklyStars,
+      friction: 6,
+      tension: 70,
+      useNativeDriver: true,
+    }).start();
+  }, [starAnim, weeklyStars]);
+
   if (loading) {
     return (
       <View style={styles.centerScreen}>
@@ -171,6 +202,12 @@ export default function Home() {
           />
         }
       >
+        <WeeklyStarRating
+          rating={loginRating}
+          animatedValue={starAnim}
+          onPress={() => router.push("/login-rating-history" as any)}
+        />
+
         <View style={styles.hero}>
           <View style={styles.heroTop}>
             <View style={styles.heroIcon}>
@@ -295,6 +332,54 @@ function InfoTile({
   );
 }
 
+function WeeklyStarRating({
+  rating,
+  animatedValue,
+  onPress,
+}: {
+  rating: WeeklyLoginRating | null;
+  animatedValue: Animated.Value;
+  onPress: () => void;
+}) {
+  const stars = rating?.stars ?? 0;
+  const scale = animatedValue.interpolate({
+    inputRange: [0, 5],
+    outputRange: [0.96, 1.04],
+    extrapolate: "clamp",
+  });
+
+  return (
+    <TouchableOpacity activeOpacity={0.88} style={styles.ratingCard} onPress={onPress}>
+      <View style={styles.ratingHeader}>
+        <View style={styles.ratingIcon}>
+          <Ionicons name="sparkles" size={17} color="#B45309" />
+        </View>
+        <View>
+          <Text style={styles.ratingKicker}>Weekly Login</Text>
+          <Text style={styles.ratingTitle}>{stars}/5 Stars</Text>
+        </View>
+      </View>
+      <Animated.View style={[styles.starRow, { transform: [{ scale }] }]}>
+        {Array.from({ length: 5 }).map((_, index) => {
+          const active = index < stars;
+          return (
+            <Ionicons
+              key={index}
+              name={active ? "star" : "star-outline"}
+              size={22}
+              color={active ? "#F59E0B" : "#D8CFF6"}
+            />
+          );
+        })}
+      </Animated.View>
+      <View style={styles.ratingFooter}>
+        <Text style={styles.ratingHint}>2 logins/day earns 1 star</Text>
+        <Ionicons name="chevron-forward" size={16} color="#7C3AED" />
+      </View>
+    </TouchableOpacity>
+  );
+}
+
 function SessionCard({
   label,
   session,
@@ -408,6 +493,65 @@ const styles = StyleSheet.create({
   },
   retryText: {
     color: "#FFFFFF",
+  },
+  ratingCard: {
+    alignSelf: "flex-start",
+    minWidth: 210,
+    marginBottom: 14,
+    padding: 14,
+    borderRadius: 22,
+    borderWidth: 1,
+    borderColor: "#FDE68A",
+    backgroundColor: "#FFFFFF",
+    shadowColor: "#B45309",
+    shadowOpacity: 0.14,
+    shadowRadius: 14,
+    shadowOffset: { width: 0, height: 8 },
+    elevation: 5,
+  },
+  ratingHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+  },
+  ratingIcon: {
+    width: 38,
+    height: 38,
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: 14,
+    backgroundColor: "#FEF3C7",
+  },
+  ratingKicker: {
+    color: "#9A6A04",
+    fontSize: 10,
+    fontWeight: "800",
+    textTransform: "uppercase",
+  },
+  ratingTitle: {
+    marginTop: 1,
+    color: "#2E1065",
+    fontSize: 18,
+    fontWeight: "900",
+  },
+  starRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    marginTop: 12,
+  },
+  ratingFooter: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 8,
+    marginTop: 10,
+  },
+  ratingHint: {
+    flex: 1,
+    color: "#6B5A80",
+    fontSize: 11,
+    fontWeight: "700",
   },
   hero: {
     backgroundColor: "#5523D2",

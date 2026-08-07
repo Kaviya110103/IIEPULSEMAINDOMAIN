@@ -1,5 +1,6 @@
 from django.contrib.auth.models import User
 from rest_framework import serializers
+import re
 from .models import (
     Courses, Employee, Batches, Students,
     StudentAttendance, StudyMaterial, StudyMaterialAssignment, QuizTest, Question, AssignedTest,
@@ -28,6 +29,22 @@ class CourseSerializer(serializers.ModelSerializer):
     class Meta:
         model = Courses
         fields = '__all__'
+
+    def validate(self, attrs):
+        duration = attrs.get('duration')
+        if duration is None and self.instance is not None:
+            duration = self.instance.duration
+        if not str(duration or '').strip():
+            raise serializers.ValidationError({'duration': 'Course duration is required. Use a value like 2 months or 20 days.'})
+        return attrs
+
+    def validate_duration(self, value):
+        value = str(value or '').strip().lower()
+        if not value:
+            raise serializers.ValidationError('Course duration is required. Use a value like 2 months or 20 days.')
+        if not re.fullmatch(r'[1-9]\d*\s*(day|days|month|months)', value):
+            raise serializers.ValidationError('Enter a valid duration like 2 months or 20 days.')
+        return value
 
 
 class GalleryItemSerializer(serializers.ModelSerializer):

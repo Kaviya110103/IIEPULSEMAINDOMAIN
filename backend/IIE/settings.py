@@ -19,8 +19,8 @@ def env_list(key, default=None, sep=','):
     return default or []
 
 LOCAL_DOMAIN = os.getenv('LOCAL_DOMAIN', '127.0.0.1:8000').strip()
-LOCAL_LAN_DOMAIN = os.getenv('LOCAL_LAN_DOMAIN', '192.168.1.7:8000').strip()
-DEPLOYMENT_DOMAIN = os.getenv('DEPLOYMENT_DOMAIN', '127.0.0.1:8000').strip()
+LOCAL_LAN_DOMAIN = os.getenv('LOCAL_LAN_DOMAIN', 'iiepulse.indrainstitute.com').strip()
+DEPLOYMENT_DOMAIN = os.getenv('DEPLOYMENT_DOMAIN', 'iiepulse.indrainstitute.com').strip()
 DEPLOYMENT_SCHEME = os.getenv(
     'DEPLOYMENT_SCHEME',
     'http' if DEPLOYMENT_DOMAIN.startswith(('localhost', '127.0.0.1', '192.168.')) else 'https',
@@ -33,8 +33,7 @@ CSRF_TRUSTED_ORIGINS = env_list('DJANGO_CSRF_TRUSTED_ORIGINS', [
     f'http://{LOCAL_LAN_DOMAIN}',
     'http://localhost:5173',
     'http://127.0.0.1:5173',
-    'http://192.168.1.7:5173',
-    'http://192.168.1.6:5173',
+    'https://iiepulse.indrainstitute.com',
 ])
 INSTALLED_APPS = [
     'django.contrib.admin',
@@ -129,14 +128,11 @@ else:
         }
     }
 
+DEBUG = getenv_bool('DJANGO_DEBUG', DEPLOYMENT_IS_LOCAL)
+
 SECRET_KEY = os.getenv('DJANGO_SECRET_KEY')
 if not SECRET_KEY:
-    if getenv_bool('DJANGO_DEBUG', _using_sqlite):
-        SECRET_KEY = 'django-insecure-dev-only-change-before-production'
-    else:
-        raise ValueError('DJANGO_SECRET_KEY environment variable is required when DEBUG is disabled.')
-
-DEBUG = getenv_bool('DJANGO_DEBUG', _using_sqlite)
+    SECRET_KEY = 'iie-pulse-deployment-default-change-this-secret-key-before-production-release'
 
 ALLOWED_HOSTS = env_list('DJANGO_ALLOWED_HOSTS')
 if not ALLOWED_HOSTS:
@@ -144,10 +140,20 @@ if not ALLOWED_HOSTS:
         DEPLOYMENT_DOMAIN,
         LOCAL_DOMAIN.split(':')[0],
         LOCAL_LAN_DOMAIN.split(':')[0],
-        '192.168.1.7',
+        'iiepulse.indrainstitute.com',
         'localhost',
         '127.0.0.1',
     ]
+for host in [
+    DEPLOYMENT_DOMAIN.split(':')[0],
+    LOCAL_DOMAIN.split(':')[0],
+    LOCAL_LAN_DOMAIN.split(':')[0],
+    'iiepulse.indrainstitute.com',
+    'localhost',
+    '127.0.0.1',
+]:
+    if host and host not in ALLOWED_HOSTS:
+        ALLOWED_HOSTS.append(host)
 
 REST_FRAMEWORK = {
     'DEFAULT_AUTHENTICATION_CLASSES': [

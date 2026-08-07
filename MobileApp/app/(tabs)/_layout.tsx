@@ -1,14 +1,18 @@
 import { Tabs, useGlobalSearchParams, usePathname, useRouter } from "expo-router";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ActivityIndicator, AppState, BackHandler, Image, PanResponder, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
+import { ActivityIndicator, AppState, BackHandler, Image, Modal, PanResponder, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import AsyncStorage from "@react-native-async-storage/async-storage";
+import * as WebBrowser from "expo-web-browser";
 import { useStudentAuthGuard } from "@/hooks/use-student-auth-guard";
 import api from "@/services/api";
 
 const HOME_PATH = "/welcome";
 const NO_SWIPE_PATHS = new Set(["/", HOME_PATH, "/dashboard", "/loginform", "/register", "/public-overview"]);
 const INACTIVITY_LIMIT = 5 * 60 * 1000;
+const STUDENT_FEEDBACK_FORM_URL = "https://docs.google.com/forms/d/e/1FAIpQLScO29CvpRNB0057OxNROPr0IVPH6dAZZpueHFRRespT0g1E_A/viewform";
+const STUDENT_FEEDBACK_INTERVAL_MS = 20 * 24 * 60 * 60 * 1000;
+const STUDENT_FEEDBACK_LAST_PROMPT_KEY = "iie_student_feedback_last_prompt_at";
 const appLogo = require("../../assets/images/logo-light.png");
 
 const drawerItems: Array<{
@@ -38,13 +42,46 @@ export default function TabsLayout() {
   const pathname = usePathname();
   const authReady = useStudentAuthGuard();
   const [drawerOpen, setDrawerOpen] = useState(false);
+  const [feedbackVisible, setFeedbackVisible] = useState(false);
   const inactivityTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const feedbackTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const backgroundedAtRef = useRef<number | null>(null);
   const loggingOutRef = useRef(false);
   const { mode } = useGlobalSearchParams<{ mode?: string }>();
   const routeMode = Array.isArray(mode) ? mode[0] : mode;
   const canGoHome = !NO_SWIPE_PATHS.has(pathname);
   const showAppHeader = canGoHome && authReady;
+
+  const clearFeedbackTimer = useCallback(() => {
+    if (feedbackTimerRef.current) {
+      clearTimeout(feedbackTimerRef.current);
+      feedbackTimerRef.current = null;
+    }
+  }, []);
+
+  const scheduleFeedbackPrompt = useCallback((delay = STUDENT_FEEDBACK_INTERVAL_MS) => {
+    clearFeedbackTimer();
+    feedbackTimerRef.current = setTimeout(() => {
+      setFeedbackVisible(true);
+    }, delay);
+  }, [clearFeedbackTimer]);
+
+  const markFeedbackPromptSeen = useCallback(async () => {
+    await AsyncStorage.setItem(STUDENT_FEEDBACK_LAST_PROMPT_KEY, String(Date.now()));
+    setFeedbackVisible(false);
+    scheduleFeedbackPrompt();
+  }, [scheduleFeedbackPrompt]);
+
+  const openFeedbackForm = useCallback(async () => {
+    await markFeedbackPromptSeen();
+    WebBrowser.openBrowserAsync(STUDENT_FEEDBACK_FORM_URL);
+  }, [markFeedbackPromptSeen]);
+
+  useEffect(() => {
+    if (feedbackVisible) {
+      openFeedbackForm();
+    }
+  }, [feedbackVisible, openFeedbackForm]);
 
   const logoutForInactivity = useCallback(async () => {
     if (loggingOutRef.current) return;
@@ -106,6 +143,30 @@ export default function TabsLayout() {
   useEffect(() => {
     setDrawerOpen(false);
   }, [pathname]);
+
+  useEffect(() => {
+    if (!authReady) return;
+    let cancelled = false;
+
+    const scheduleInitialFeedbackPrompt = async () => {
+      const access = await AsyncStorage.getItem("access_token");
+      if (!access || cancelled) return;
+
+      const lastRaw = await AsyncStorage.getItem(STUDENT_FEEDBACK_LAST_PROMPT_KEY);
+      const lastPromptAt = Number(lastRaw || 0);
+      const elapsed = Date.now() - lastPromptAt;
+      const delay = lastPromptAt ? Math.max(STUDENT_FEEDBACK_INTERVAL_MS - elapsed, 0) : STUDENT_FEEDBACK_INTERVAL_MS;
+
+      scheduleFeedbackPrompt(delay);
+    };
+
+    scheduleInitialFeedbackPrompt();
+
+    return () => {
+      cancelled = true;
+      clearFeedbackTimer();
+    };
+  }, [authReady, clearFeedbackTimer, scheduleFeedbackPrompt]);
 
   useEffect(() => {
     const subscription = BackHandler.addEventListener("hardwareBackPress", () => {
@@ -223,6 +284,7 @@ export default function TabsLayout() {
             <Tabs.Screen name="home" />
             <Tabs.Screen name="attendance/index" />
             <Tabs.Screen name="announcement" />
+            <Tabs.Screen name="login-rating-history" />
             <Tabs.Screen name="leaveapply" />
             <Tabs.Screen name="leavehistory" />
             <Tabs.Screen name="logsheet" />
@@ -279,6 +341,26 @@ export default function TabsLayout() {
           style={styles.edgeSwipeZone}
         />
       ) : null}
+
+      <Modal visible={feedbackVisible} transparent animationType="fade" onRequestClose={markFeedbackPromptSeen}>
+        <View style={styles.feedbackOverlay}>
+          <View style={styles.feedbackCard}>
+            <View style={styles.feedbackIcon}>
+              <Ionicons name="chatbubbles-outline" size={28} color="#5523D2" />
+            </View>
+            <Text style={styles.feedbackTitle}>Student Feedback</Text>
+            <Text style={styles.feedbackText}>Please share your feedback about your learning experience.</Text>
+            <View style={styles.feedbackActions}>
+              <Pressable style={styles.feedbackSecondaryButton} onPress={markFeedbackPromptSeen}>
+                <Text style={styles.feedbackSecondaryText}>Later</Text>
+              </Pressable>
+              <Pressable style={styles.feedbackPrimaryButton} onPress={openFeedbackForm}>
+                <Text style={styles.feedbackPrimaryText}>Open Form</Text>
+              </Pressable>
+            </View>
+          </View>
+        </View>
+      </Modal>
     </View>
   );
 }
@@ -292,6 +374,76 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
     backgroundColor: "#F8F7FF",
+  },
+  feedbackOverlay: {
+    flex: 1,
+    alignItems: "center",
+    justifyContent: "center",
+    padding: 24,
+    backgroundColor: "rgba(15, 10, 30, 0.55)",
+  },
+  feedbackCard: {
+    width: "100%",
+    maxWidth: 360,
+    alignItems: "center",
+    padding: 22,
+    borderRadius: 24,
+    borderWidth: 1,
+    borderColor: "#EDE9FE",
+    backgroundColor: "#FFFFFF",
+  },
+  feedbackIcon: {
+    width: 58,
+    height: 58,
+    alignItems: "center",
+    justifyContent: "center",
+    marginBottom: 14,
+    borderRadius: 18,
+    backgroundColor: "#F5F3FF",
+  },
+  feedbackTitle: {
+    marginBottom: 8,
+    color: "#1F1335",
+    fontSize: 20,
+    fontWeight: "800",
+  },
+  feedbackText: {
+    marginBottom: 20,
+    color: "#5B526E",
+    fontSize: 14,
+    lineHeight: 21,
+    textAlign: "center",
+  },
+  feedbackActions: {
+    alignSelf: "stretch",
+    flexDirection: "row",
+    gap: 10,
+  },
+  feedbackSecondaryButton: {
+    flex: 1,
+    height: 46,
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: "#DED7FF",
+    backgroundColor: "#FFFFFF",
+  },
+  feedbackSecondaryText: {
+    color: "#5523D2",
+    fontWeight: "700",
+  },
+  feedbackPrimaryButton: {
+    flex: 1,
+    height: 46,
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: 14,
+    backgroundColor: "#5523D2",
+  },
+  feedbackPrimaryText: {
+    color: "#FFFFFF",
+    fontWeight: "800",
   },
   appHeader: {
     height: 64,

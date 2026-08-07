@@ -18,6 +18,7 @@ export default function UserNotifications() {
   const role = location.pathname.split('/')[1] || 'student'
 
   const getTargetPath = (item) => {
+    if (item.type === 'batch_duration_exceeded') return ''
     if (item.action_url) return item.action_url
     const type = item.type
     const paths = {
@@ -28,6 +29,8 @@ export default function UserNotifications() {
         support: '/admin/student-support',
         leave_application: '/admin/staff-leave',
         assignment: '/admin/assigned',
+        batch_ending_soon: '/admin',
+        batch_duration_exceeded: '/admin',
         doubt_raised: '/admin',
         doubt_resolved: '/admin',
       },
@@ -38,6 +41,8 @@ export default function UserNotifications() {
         support: '/employee/support',
         leave_application: '/employee/student-leave/pending',
         assignment: '/employee/batches',
+        batch_ending_soon: '/employee/batches',
+        batch_duration_exceeded: '/employee/batches',
         doubt_raised: '/employee/doubts',
         doubt_resolved: '/employee/doubts',
       },
@@ -48,6 +53,8 @@ export default function UserNotifications() {
         support: '/counselor/support',
         leave_application: '/counselor/students',
         assignment: '/counselor/assigned-students',
+        batch_ending_soon: '/counselor',
+        batch_duration_exceeded: '/counselor',
         doubt_raised: '/counselor/students',
         doubt_resolved: '/counselor/students',
       },
@@ -116,11 +123,16 @@ export default function UserNotifications() {
           </div>
         ) : (
           <div style={{ padding: 18 }}>
-            {notifications.map(item => (
+            {notifications.map(item => {
+              const targetPath = getTargetPath(item)
+              const canNavigate = Boolean(targetPath)
+              return (
               <button
                 type="button"
                 key={item.id}
-                onClick={() => navigate(getTargetPath(item))}
+                onClick={() => {
+                  if (canNavigate) navigate(targetPath)
+                }}
                 style={{
                   width: '100%',
                   border: `1px solid ${item.is_read ? colors.border : colors.blue}`,
@@ -129,7 +141,7 @@ export default function UserNotifications() {
                   padding: 16,
                   marginBottom: 12,
                   textAlign: 'left',
-                  cursor: 'pointer',
+                  cursor: canNavigate ? 'pointer' : 'default',
                 }}
               >
                 <div style={{ display: 'flex', gap: 14, alignItems: 'flex-start' }}>
@@ -152,11 +164,12 @@ export default function UserNotifications() {
                       <small style={{ color: colors.muted, whiteSpace: 'nowrap' }}>{item.created_at}</small>
                     </span>
                     <span style={{ color: colors.text, fontSize: 13, lineHeight: 1.6 }}>{item.message}</span>
-                    <small style={{ color: colors.blue, marginTop: 8, display: 'block', fontWeight: 700 }}>Click to open</small>
+                    {canNavigate && <small style={{ color: colors.blue, marginTop: 8, display: 'block', fontWeight: 700 }}>Click to open</small>}
                   </span>
                 </div>
               </button>
-            ))}
+              )
+            })}
           </div>
         )}
       </div>

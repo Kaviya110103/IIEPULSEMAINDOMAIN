@@ -1,6 +1,7 @@
 import csv
 import io
 import re
+import calendar
 import mimetypes
 from pathlib import Path
 from html import escape
@@ -116,6 +117,7 @@ def send_email_async(subject, message, recipient_list):
 from .models import (
     Courses, Employee, Batches, Students,
     StudentAttendance, StudyMaterial, StudyMaterialAssignment, QuizTest, Question, AssignedTest, UserActivity,
+    StudentLoginRatingEvent,
     StaffLeaveRequest, StudentLeaveApplication, SupportRequest, StudentSupportRequest,
     CourseSession, DailySessionCompletion, StudentSessionStatus, Student_Session_Progress, DoubtResponse, SessionNotification,
     Announcement, CounselorAnnouncement, CounselorLeaveRequest, CounselorSupportRequest,
@@ -181,8 +183,29 @@ def record_user_login(user, user_type, employee=None, student=None):
             login_time=now,
             last_seen=now,
         )
+        if user_type == 'student' and student:
+            record_student_login_rating_event(user, student, 'login', now)
     except Exception:
         logger.exception("Failed to record user login for user_id=%s", getattr(user, 'id', None))
+
+
+def record_student_login_rating_event(user, student, event_type, occurred_at=None):
+    if not user or not student:
+        return False
+    try:
+        StudentLoginRatingEvent.objects.create(
+            user=user,
+            student=student,
+            event_type=event_type,
+            occurred_at=occurred_at or timezone.now(),
+        )
+        return True
+    except (DatabaseError, OperationalError):
+        logger.warning("Student login rating event table is unavailable. Run migrations.")
+        return False
+    except Exception:
+        logger.exception("Failed to record student login rating event for student_id=%s", getattr(student, 'id', None))
+        return False
 
 
 def record_user_logout(user):
@@ -198,6 +221,110 @@ def record_user_logout(user):
             activity.save(update_fields=['logout_time', 'last_seen'])
     except Exception:
         logger.exception("Failed to record user logout for user_id=%s", getattr(user, 'id', None))
+
+
+def get_week_start(day=None):
+    current_day = day or timezone.localdate()
+    return current_day - timedelta(days=current_day.weekday())
+
+
+def get_local_datetime_range(start_date, days):
+    start_dt = timezone.make_aware(datetime.combine(start_date, datetime.min.time()))
+    end_dt = timezone.make_aware(datetime.combine(start_date + timedelta(days=days), datetime.min.time()))
+    return start_dt, end_dt
+
+
+def sync_student_login_rating_events_from_activity(student, start_date, week_end):
+    try:
+        start_dt, end_dt = get_local_datetime_range(start_date, (week_end - start_date).days + 1)
+        activity_qs = UserActivity.objects.filter(
+            student=student,
+            user_type='student',
+            login_time__gte=start_dt,
+            login_time__lt=end_dt,
+        ).values('user_id', 'login_time')
+
+        created = 0
+        for item in activity_qs:
+            exists = StudentLoginRatingEvent.objects.filter(
+                student=student,
+                event_type='login',
+                occurred_at=item['login_time'],
+            ).exists()
+            if exists:
+                continue
+            StudentLoginRatingEvent.objects.create(
+                user_id=item['user_id'],
+                student=student,
+                event_type='login',
+                occurred_at=item['login_time'],
+            )
+            created += 1
+        return created
+    except (DatabaseError, OperationalError):
+        return 0
+
+
+def build_student_weekly_login_rating(student, week_start=None):
+    start_date = week_start or get_week_start()
+    rating_days = [start_date + timedelta(days=offset) for offset in range(5)]
+    week_end = start_date + timedelta(days=6)
+    activity_counts = {day: 0 for day in rating_days}
+
+    try:
+        sync_student_login_rating_events_from_activity(student, start_date, week_end)
+        start_dt, end_dt = get_local_datetime_range(start_date, 7)
+        event_qs = StudentLoginRatingEvent.objects.filter(
+            student=student,
+            occurred_at__gte=start_dt,
+            occurred_at__lt=end_dt,
+        ).values('occurred_at')
+        for item in event_qs:
+            event_day = timezone.localtime(item['occurred_at']).date()
+            if event_day in activity_counts:
+                activity_counts[event_day] += 1
+    except (DatabaseError, OperationalError):
+        start_dt, end_dt = get_local_datetime_range(start_date, 7)
+        activity_qs = UserActivity.objects.filter(
+            student=student,
+            user_type='student',
+            login_time__gte=start_dt,
+            login_time__lt=end_dt,
+        ).values('login_time')
+        for item in activity_qs:
+            login_day = timezone.localtime(item['login_time']).date()
+            if login_day in activity_counts:
+                activity_counts[login_day] += 1
+
+    days = []
+    stars = 0
+    for day in rating_days:
+        activity_count = activity_counts.get(day, 0)
+        earned = activity_count >= 2
+        if earned:
+            stars += 1
+        days.append({
+            'date': day.isoformat(),
+            'day': day.strftime('%a'),
+            'login_count': activity_count,
+            'activity_count': activity_count,
+            'earned': earned,
+        })
+
+    return {
+        'week_start': start_date.isoformat(),
+        'week_end': week_end.isoformat(),
+        'stars': stars,
+        'max_stars': 5,
+        'days': days,
+    }
+
+
+def get_current_student_for_request(request):
+    try:
+        return Students.objects.get(user=request.user)
+    except Students.DoesNotExist:
+        return None
 
 
 def prepare_activity_monitoring_queryset(qs):
@@ -447,6 +574,34 @@ def generate_batch_number(branch):
         return f'BAT{next_num:04d}'
 
     return f'{prefix}-BAT{next_num:03d}'
+
+
+def parse_course_duration(duration):
+    value = str(duration or '').strip().lower()
+    match = re.fullmatch(r'([1-9]\d*)\s*(day|days|month|months)', value)
+    if not match:
+        raise ValueError('Selected course has missing or invalid duration. Please update the course duration first.')
+    return int(match.group(1)), match.group(2)
+
+
+def add_calendar_months(start, months):
+    month_index = start.month - 1 + months
+    year = start.year + month_index // 12
+    month = month_index % 12 + 1
+    day = min(start.day, calendar.monthrange(year, month)[1])
+    return start.replace(year=year, month=month, day=day)
+
+
+def calculate_batch_end_date(course, start_date_value):
+    try:
+        start = datetime.strptime(str(start_date_value), '%Y-%m-%d').date()
+    except (TypeError, ValueError):
+        raise ValueError('Enter a valid batch start date.')
+
+    amount, unit = parse_course_duration(getattr(course, 'duration', ''))
+    if unit.startswith('month'):
+        return add_calendar_months(start, amount)
+    return start + timedelta(days=amount)
 
 def generate_student_id(branch):
     branch_prefix_map = {
@@ -844,8 +999,9 @@ class StudentDashboardView(APIView):
             tests_count = 0
             quizzes_count = 0
         materials_count = StudyMaterial.objects.filter(
-            batch=student.assigned_batch
-        ).count() if student.assigned_batch else 0
+            Q(batch=student.assigned_batch) |
+            Q(assignments__batch=student.assigned_batch)
+        ).distinct().count() if student.assigned_batch else 0
         # -------------------------------------------------------------
 
 
@@ -862,6 +1018,45 @@ class StudentDashboardView(APIView):
             'quizzes_count': quizzes_count,
             'materials_count': materials_count,
         })
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def student_weekly_login_rating(request):
+    student = get_current_student_for_request(request)
+    if not student:
+        return Response({'error': 'Student not found'}, status=404)
+
+    record_student_login_rating_event(request.user, student, 'app_use')
+
+    return Response({
+        'current_week': build_student_weekly_login_rating(student),
+        'rule': {
+            'minimum_logins_per_day': 2,
+            'rating_days': 5,
+            'reset': 'weekly',
+        },
+    })
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def student_weekly_login_rating_history(request):
+    student = get_current_student_for_request(request)
+    if not student:
+        return Response({'error': 'Student not found'}, status=404)
+
+    try:
+        limit = max(1, min(int(request.query_params.get('limit', 8)), 24))
+    except (TypeError, ValueError):
+        limit = 8
+
+    current_week_start = get_week_start()
+    weeks = [
+        build_student_weekly_login_rating(student, current_week_start - timedelta(days=7 * offset))
+        for offset in range(1, limit + 1)
+    ]
+    return Response({'weeks': weeks})
 
 
 class CounselorDashboardView(APIView):
@@ -1350,7 +1545,6 @@ class BatchCreateView(APIView):
         course_name_id = data.get('course_name', '').strip()
         faculty_id = data.get('faculty', '').strip()
         start_date = data.get('start_date', '').strip()
-        end_date = data.get('end_date', '').strip()
         batch_timing = data.get('batch_timing', '').strip()
         branch = data.get('branch', '').strip()
         logsheet_file = request.FILES.get('logsheet_file')
@@ -1370,7 +1564,6 @@ class BatchCreateView(APIView):
         if not course_name_id: missing.append('Course Name')
         if not faculty_id: missing.append('Faculty')
         if not start_date: missing.append('Start Date')
-        if not end_date: missing.append('End Date')
         if not batch_timing: missing.append('Batch Timing')
         if not branch: missing.append('Branch')
         if missing:
@@ -1397,13 +1590,18 @@ class BatchCreateView(APIView):
         except Employee.DoesNotExist:
             return Response({'error': 'Selected faculty not found!'}, status=404)
 
+        try:
+            calculated_end_date = calculate_batch_end_date(course, start_date)
+        except ValueError as exc:
+            return Response({'error': str(exc)}, status=400)
+
         batch = Batches(
             batch_number=batch_number,
             course_type=course_type,
             course_name=course,
             faculty=faculty,
             start_date=start_date,
-            end_date=end_date,
+            end_date=calculated_end_date,
             batch_timing=batch_timing,
             branch=branch,
         )
@@ -1458,9 +1656,6 @@ class BatchDetailView(generics.RetrieveUpdateDestroyAPIView):
         if data.get('start_date'):
             batch.start_date = data.get('start_date')
 
-        if data.get('end_date'):
-            batch.end_date = data.get('end_date')
-
         if data.get('batch_timing'):
             batch.batch_timing = data.get('batch_timing')
 
@@ -1473,6 +1668,11 @@ class BatchDetailView(generics.RetrieveUpdateDestroyAPIView):
         # -- Handle logsheet file ------------------------------------------
         if request.FILES.get('course_logsheet'):
             batch.course_logsheet = request.FILES.get('course_logsheet')
+
+        try:
+            batch.end_date = calculate_batch_end_date(batch.course_name, batch.start_date)
+        except ValueError as exc:
+            return Response({'error': str(exc)}, status=400)
 
         batch.save()
 
@@ -1949,6 +2149,8 @@ def _queue_user_notification(to_user, from_user, notification_type, title, messa
         notification_type=notification_type,
         message=message,
     )
+    if title:
+        existing = existing.filter(title=title)
     if dedupe_today:
         existing = existing.filter(created_at__date=timezone.localdate())
     if existing.exists():
@@ -1963,6 +2165,103 @@ def _queue_user_notification(to_user, from_user, notification_type, title, messa
         requires_action=requires_action,
     )
     return 1
+
+
+def _queue_batch_notification(to_user, from_user, notification_type, title, message):
+    return _queue_user_notification(
+        to_user,
+        from_user,
+        notification_type,
+        title,
+        message,
+        False,
+        False,
+    )
+
+
+def _mentor_name(staff):
+    if not staff:
+        return 'Unknown'
+    return _employee_name(staff)
+
+
+def _branch_counselors_for_batch(batch):
+    branch_values = _branch_match_values(getattr(batch, 'branch', ''))
+    counselor_qs = Employee.objects.filter(designation__iexact='counselor').select_related('user')
+    if branch_values:
+        counselor_qs = counselor_qs.filter(branch__in=branch_values)
+    return counselor_qs.distinct()
+
+
+def _batch_duration_exceeded_message(batch, staff):
+    batch_name = batch.batch_number or str(batch)
+    mentor_name = _mentor_name(staff)
+    start_display = batch.start_date.strftime("%d/%m/%Y") if batch.start_date else '-'
+    end_display = batch.end_date.strftime("%d/%m/%Y") if batch.end_date else '-'
+    return (
+        f'Batch "{batch_name}", handled by Mentor "{mentor_name}", was scheduled from '
+        f'{start_display} to {end_display}. '
+        'The batch duration has ended, but the batch is still in progress.'
+    )
+
+
+def _send_batch_duration_notifications(batch, staff, from_user, attendance_date):
+    if not batch or not staff or not attendance_date:
+        return 0
+
+    end_date = getattr(batch, 'end_date', None)
+    if not end_date:
+        try:
+            end_date = calculate_batch_end_date(batch.course_name, batch.start_date)
+            batch.end_date = end_date
+            batch.save(update_fields=['end_date'])
+        except Exception:
+            return 0
+
+    batch_name = batch.batch_number or str(batch)
+    mentor_name = _mentor_name(staff)
+    date_key = attendance_date.strftime('%Y-%m-%d')
+    sent_count = 0
+
+    if end_date - timedelta(days=2) <= attendance_date <= end_date:
+        message = f'Batch "{batch_name}" is nearing its scheduled end date. Please complete the remaining sessions soon.'
+        sent_count += _queue_batch_notification(
+            staff.user,
+            from_user,
+            'batch_ending_soon',
+            f'Batch Ending Soon - {batch_name} - {date_key}',
+            message,
+        )
+
+    if attendance_date > end_date:
+        duration_message = _batch_duration_exceeded_message(batch, staff)
+        sent_count += _queue_batch_notification(
+            staff.user,
+            from_user,
+            'batch_duration_exceeded',
+            f'Batch Duration Exceeded - {batch_name} - {date_key}',
+            duration_message,
+        )
+
+        for admin_user in User.objects.filter(Q(is_staff=True) | Q(is_superuser=True)).distinct():
+            sent_count += _queue_batch_notification(
+                admin_user,
+                from_user,
+                'batch_duration_exceeded',
+                f'Batch Duration Exceeded - {batch_name} - {date_key}',
+                duration_message,
+            )
+
+        for counselor in _branch_counselors_for_batch(batch):
+            sent_count += _queue_batch_notification(
+                counselor.user,
+                from_user,
+                'batch_duration_exceeded',
+                f'Batch Duration Exceeded - {batch_name} - {date_key}',
+                duration_message,
+            )
+
+    return sent_count
 
 
 def _queue_leave_alert(to_user, from_user, message):
@@ -2052,7 +2351,67 @@ def _student_from_leave_alert_message(message):
     return None
 
 
+def _batch_from_duration_notification(notification):
+    title_match = re.search(
+        r'Batch (?:Ending Soon|Duration Exceeded) - (.+?) - \d{4}-\d{2}-\d{2}$',
+        notification.title or '',
+    )
+    batch_number = title_match.group(1).strip() if title_match else ''
+    if not batch_number:
+        message_match = re.search(r'Batch\s+"([^"]+)"', notification.message or '')
+        batch_number = message_match.group(1).strip() if message_match else ''
+    if not batch_number:
+        return None
+    return Batches.objects.select_related('faculty').filter(batch_number=batch_number).first()
+
+
 def _notification_action_url(notification, request_user):
+    if notification.notification_type == 'batch_duration_exceeded':
+        return ''
+
+    if notification.notification_type in ('batch_ending_soon', 'batch_duration_exceeded'):
+        batch = _batch_from_duration_notification(notification)
+        mentor = getattr(batch, 'faculty', None) if batch else None
+        batch_student = (
+            Students.objects.filter(assigned_batch=batch).order_by('first_name', 'last_name', 'id').first()
+            if batch else None
+        )
+        employee = Employee.objects.filter(user=request_user).first()
+        if employee and (employee.designation or '').lower() in ('trainer', 'mentor'):
+            return '/employee/batches'
+        if employee and (employee.designation or '').lower() == 'counselor':
+            if batch:
+                params = {
+                    'staff_id': mentor.id if mentor else '',
+                    'batch_id': batch.id,
+                    'student_id': batch_student.id if batch_student else '',
+                    'tab': 'attendance',
+                }
+                query = '&'.join(
+                    f"{key}={requests.utils.quote(str(value))}"
+                    for key, value in params.items()
+                    if value
+                )
+                return f"/counselor/students?{query}" if query else '/counselor/students'
+            return '/counselor/students'
+        if is_admin_user(request_user):
+            if batch:
+                params = {
+                    'branch': batch.branch,
+                    'staff_id': mentor.id if mentor else '',
+                    'batch_id': batch.id,
+                    'student_id': batch_student.id if batch_student else '',
+                    'tab': 'attendance',
+                }
+                query = '&'.join(
+                    f"{key}={requests.utils.quote(str(value))}"
+                    for key, value in params.items()
+                    if value
+                )
+                return f"/admin/attendance?{query}" if query else '/admin/attendance'
+            return '/admin/attendance'
+        return ''
+
     if notification.notification_type == 'leave_alert':
         student = _student_from_leave_alert_message(notification.message)
         if not student:
@@ -2118,6 +2477,7 @@ def mark_attendance(request):
 
     created = []
     leave_alerts = 0
+    batch_duration_alerts = 0
     for item in attendance_data:
         try:
             student = Students.objects.get(id=item['student_id'])
@@ -2137,7 +2497,14 @@ def mark_attendance(request):
                 leave_alerts += _send_long_absence_notifications(student, batch, staff, request.user, attendance_date)
         except Students.DoesNotExist:
             pass
-    return Response({'message': f'{len(created)} records saved.', 'records': created, 'leave_alerts': leave_alerts})
+    if created:
+        batch_duration_alerts = _send_batch_duration_notifications(batch, staff, request.user, attendance_date)
+    return Response({
+        'message': f'{len(created)} records saved.',
+        'records': created,
+        'leave_alerts': leave_alerts,
+        'batch_duration_alerts': batch_duration_alerts,
+    })
 
 
 @api_view(['GET'])
@@ -4181,17 +4548,27 @@ def get_student_notifications(request):
         if employee:
             notifs = notifs.exclude(notification_type='session_completed')
         notifs = notifs.order_by('-created_at')[:50]
-        data = [{
-            'id': n.id,
-            'type': n.notification_type,
-            'title': n.title or '',
-            'message': n.message,
-            'is_read': n.is_read,
-            'requires_action': n.requires_action,
-            'created_at': n.created_at.strftime('%d %b %Y, %H:%M'),
-            'session_id': n.session.id if n.session else None,
-            'action_url': _notification_action_url(n, request.user),
-        } for n in notifs]
+        data = []
+        for n in notifs:
+            message = n.message
+            if n.notification_type == 'batch_duration_exceeded':
+                batch = _batch_from_duration_notification(n)
+                if batch:
+                    message = _batch_duration_exceeded_message(batch, batch.faculty)
+                    if n.message != message:
+                        n.message = message
+                        n.save(update_fields=['message'])
+            data.append({
+                'id': n.id,
+                'type': n.notification_type,
+                'title': n.title or '',
+                'message': message,
+                'is_read': n.is_read,
+                'requires_action': n.requires_action,
+                'created_at': n.created_at.strftime('%d %b %Y, %H:%M'),
+                'session_id': n.session.id if n.session else None,
+                'action_url': _notification_action_url(n, request.user),
+            })
         return Response(data)
     except Exception as e:
         return Response({'error': str(e)}, status=500)

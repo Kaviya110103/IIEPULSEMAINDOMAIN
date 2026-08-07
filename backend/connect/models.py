@@ -11,6 +11,7 @@ from django.core.validators import FileExtensionValidator
 class Courses(models.Model):
     course_name = models.CharField(max_length=255, unique=True)
     course_type = models.CharField(max_length=100, blank=True, null=True)
+    duration = models.CharField(max_length=50, blank=True, null=True)
     fee = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
     course_logsheet = models.FileField (
             upload_to = 'course_logsheets/' ,
@@ -276,6 +277,34 @@ class UserActivity ( models.Model ) :
 
     def __str__ ( self ) :
         return f"{self.user.username} - {self.user_type} - {self.login_time}"
+
+
+class StudentLoginRatingEvent ( models.Model ) :
+    EVENT_TYPE_CHOICES = [
+            ('login' , 'Login') ,
+            ('app_use' , 'App Use') ,
+    ]
+
+    user = models.ForeignKey ( User , on_delete = models.CASCADE , related_name = 'student_login_rating_events' )
+    student = models.ForeignKey (
+            'Students' ,
+            on_delete = models.CASCADE ,
+            related_name = 'login_rating_events'
+    )
+    event_type = models.CharField ( max_length = 20 , choices = EVENT_TYPE_CHOICES )
+    occurred_at = models.DateTimeField ( default = timezone.now )
+    created_at = models.DateTimeField ( auto_now_add = True )
+
+    class Meta :
+        db_table = 'student_login_rating_events'
+        ordering = [ '-occurred_at' ]
+        indexes = [
+                models.Index ( fields = [ 'student' , 'occurred_at' ] ) ,
+                models.Index ( fields = [ 'student' , 'event_type' , 'occurred_at' ] ) ,
+        ]
+
+    def __str__ ( self ) :
+        return f"{self.student_id} - {self.event_type} - {self.occurred_at}"
 
 
 class PublicUser(models.Model):
@@ -776,6 +805,8 @@ class SessionNotification ( models.Model ) :
             ('doubt_resolved' , 'Doubt Resolved') ,
             ('leave_alert' , 'Leave Alert') ,
             ('assignment' , 'Assignment') ,
+            ('batch_ending_soon' , 'Batch Ending Soon') ,
+            ('batch_duration_exceeded' , 'Batch Duration Exceeded') ,
             ('quiz_result' , 'Quiz Result') ,
             ('leave_application' , 'Leave Application') ,
             ('announcement' , 'Announcement') ,
