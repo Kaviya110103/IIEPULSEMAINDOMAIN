@@ -73,6 +73,7 @@ api.interceptors.request.use(async (config) => {
 
   if (
     requestUrl.includes("auth/login/") ||
+    requestUrl.includes("auth/otp/") ||
     requestUrl.includes("gallery/") ||
     requestUrl.includes("vlogs/") ||
     requestUrl.includes("news/") ||
@@ -143,6 +144,16 @@ type LoginPayload = {
   username: string;
   password: string;
   user_type: "admin" | "employee" | "student";
+};
+
+type OtpSendPayload = {
+  mobile_no: string;
+};
+
+type OtpVerifyPayload = {
+  mobile_no: string;
+  req_id: string;
+  otp: string;
 };
 
 function getApiErrorMessage(error: any, fallback = "Request failed") {
@@ -283,6 +294,55 @@ async function postLoginWithFallback(payload: LoginPayload) {
   throw lastNetworkError;
 }
 
+async function postOtpWithFallback(endpoint: string, payload: OtpSendPayload | OtpVerifyPayload) {
+  let lastNetworkError: any = null;
+  const attemptedUrls: string[] = [];
+
+  for (const baseUrl of getCandidateApiBaseUrls()) {
+    attemptedUrls.push(baseUrl);
+
+    try {
+      const response = await axios.post(`${baseUrl}${endpoint}`, payload, {
+        timeout: 15000,
+        headers: { "Content-Type": "application/json" },
+      });
+
+      api.defaults.baseURL = baseUrl;
+      return response;
+    } catch (error: any) {
+      const isNetworkError =
+        !error?.response && String(error?.message).toLowerCase() === "network error";
+
+      if (!isNetworkError) {
+        throw error;
+      }
+
+      lastNetworkError = error;
+      error.apiBaseUrls = attemptedUrls;
+    }
+  }
+
+  if (lastNetworkError) {
+    lastNetworkError.apiBaseUrls = attemptedUrls;
+  }
+
+  throw lastNetworkError;
+}
+
+async function persistStudentSession(data: any) {
+  if (data?.access) {
+    await AsyncStorage.setItem("access_token", data.access);
+  }
+
+  if (data?.refresh) {
+    await AsyncStorage.setItem("refresh_token", data.refresh);
+  }
+
+  await AsyncStorage.setItem("student_id", data?.student_id || "");
+  await AsyncStorage.setItem("student_pk", String(data?.student_pk || ""));
+  await AsyncStorage.setItem("student_name", data?.name || "");
+}
+
 export async function loginUser(payload: LoginPayload) {
   try {
     await AsyncStorage.multiRemove([
@@ -297,13 +357,7 @@ export async function loginUser(payload: LoginPayload) {
     const response = await postLoginWithFallback(payload);
     const data = response.data;
 
-    if (data?.access) {
-      await AsyncStorage.setItem("access_token", data.access);
-    }
-
-    if (data?.refresh) {
-      await AsyncStorage.setItem("refresh_token", data.refresh);
-    }
+    await persistStudentSession(data);
 
     return {
       success: true,
@@ -322,6 +376,88 @@ export async function loginUser(payload: LoginPayload) {
         (networkError &&
           `Cannot connect to backend. Tried: ${attemptedUrls}. Please start the backend server or set EXPO_PUBLIC_API_URL.`) ||
         getApiErrorMessage(error, "Login failed"),
+      data: error?.response?.data,
+    };
+  }
+}
+
+function formatNetworkError(error: any, fallback: string) {
+  const networkError =
+    !error?.response && String(error?.message).toLowerCase() === "network error";
+  const attemptedUrls = Array.isArray(error?.apiBaseUrls)
+    ? error.apiBaseUrls.join(", ")
+    : getCandidateApiBaseUrls().join(", ");
+
+  return (
+    (networkError &&
+      `Cannot connect to backend. Tried: ${attemptedUrls}. Please start the backend server or set EXPO_PUBLIC_API_URL.`) ||
+    getApiErrorMessage(error, fallback)
+  );
+}
+
+export async function sendLoginOtp(mobileNo: string) {
+  try {
+    const response = await postOtpWithFallback("auth/otp/send/", { mobile_no: mobileNo });
+    return {
+      success: true,
+      data: response.data,
+    };
+  } catch (error: any) {
+    return {
+      success: false,
+      error: formatNetworkError(error, "Unable to send OTP"),
+      data: error?.response?.data,
+    };
+  }
+}
+
+export async function resendLoginOtp(mobileNo: string, reqId: string) {
+  try {
+    const response = await postOtpWithFallback("auth/otp/resend/", {
+      mobile_no: mobileNo,
+      req_id: reqId,
+    });
+    return {
+      success: true,
+      data: response.data,
+    };
+  } catch (error: any) {
+    return {
+      success: false,
+      error: formatNetworkError(error, "Unable to resend OTP"),
+      data: error?.response?.data,
+    };
+  }
+}
+
+export async function verifyLoginOtp(mobileNo: string, reqId: string, otp: string) {
+  try {
+    await AsyncStorage.multiRemove([
+      GUEST_SESSION_KEY,
+      "access_token",
+      "refresh_token",
+      "student_id",
+      "student_pk",
+      "student_name",
+    ]);
+
+    const response = await postOtpWithFallback("auth/otp/verify/", {
+      mobile_no: mobileNo,
+      req_id: reqId,
+      otp,
+    });
+    const data = response.data;
+
+    await persistStudentSession(data);
+
+    return {
+      success: true,
+      data,
+    };
+  } catch (error: any) {
+    return {
+      success: false,
+      error: formatNetworkError(error, "Unable to verify OTP"),
       data: error?.response?.data,
     };
   }

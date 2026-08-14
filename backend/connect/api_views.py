@@ -147,6 +147,167 @@ def get_tokens_for_user(user):
     return {'refresh': str(refresh), 'access': str(refresh.access_token)}
 
 
+MSG91_WIDGET_BASE_URL = 'https://control.msg91.com/api/v5/widget'
+OTP_SEND_COOLDOWN_SECONDS = 60
+OTP_SEND_LIMIT_PER_HOUR = 5
+OTP_VERIFY_LIMIT = 5
+OTP_REQUEST_TTL_SECONDS = 10 * 60
+OTP_VERIFY_TTL_SECONDS = 15 * 60
+OTP_HOUR_SECONDS = 60 * 60
+
+
+def get_client_ip(request):
+    forwarded_for = request.META.get('HTTP_X_FORWARDED_FOR')
+    if forwarded_for:
+        return forwarded_for.split(',')[0].strip()
+    return request.META.get('REMOTE_ADDR', 'unknown')
+
+
+def normalize_indian_mobile(value):
+    digits = re.sub(r'\D+', '', str(value or ''))
+    if len(digits) == 10:
+        return f'91{digits}'
+    if len(digits) == 12 and digits.startswith('91'):
+        return digits
+    return ''
+
+
+def display_mobile(normalized_mobile):
+    if normalized_mobile and len(normalized_mobile) == 12 and normalized_mobile.startswith('91'):
+        return normalized_mobile[2:]
+    return normalized_mobile or ''
+
+
+def cache_counter(key, timeout):
+    value = cache.get(key)
+    if value is None:
+        cache.set(key, 1, timeout=timeout)
+        return 1
+    try:
+        value = int(value) + 1
+    except (TypeError, ValueError):
+        value = 1
+    cache.set(key, value, timeout=timeout)
+    return value
+
+
+def check_msg91_config():
+    widget_id = getattr(settings, 'MSG91_WIDGET_ID', '').strip()
+    auth_token = getattr(settings, 'MSG91_AUTH_TOKEN', '').strip()
+    if not widget_id or not auth_token:
+        return None, None, Response(
+            {'error': 'OTP login is temporarily unavailable. Please contact support.'},
+            status=status.HTTP_503_SERVICE_UNAVAILABLE,
+        )
+    return widget_id, auth_token, None
+
+
+def find_active_student_by_mobile(normalized_mobile):
+    matched_students = []
+    for student in Students.objects.select_related('user').filter(user__isnull=False):
+        if normalize_indian_mobile(student.mobile_no) == normalized_mobile:
+            matched_students.append(student)
+
+    if not matched_students:
+        return None, Response({'error': 'No active student account found for this mobile number.'}, status=404)
+
+    if len(matched_students) > 1:
+        return None, Response(
+            {'error': 'Multiple student accounts use this mobile number. Please contact support.'},
+            status=409,
+        )
+
+    student = matched_students[0]
+    if not student.user or not student.user.is_active:
+        return None, Response({'error': 'This student account is inactive. Please contact support.'}, status=403)
+
+    return student, None
+
+
+def build_student_login_payload(user, student):
+    record_user_login(user, 'student', student=student)
+    return {
+        **get_tokens_for_user(user),
+        'user_type': 'student',
+        'student_id': student.student_id,
+        'student_pk': student.id,
+        'name': f"{student.first_name} {student.last_name or ''}".strip(),
+    }
+
+
+def msg91_post(endpoint, payload, timeout=15):
+    response = requests.post(
+        f'{MSG91_WIDGET_BASE_URL}{endpoint}',
+        json=payload,
+        headers={'Content-Type': 'application/json'},
+        timeout=timeout,
+    )
+    response.raise_for_status()
+    try:
+        return response.json()
+    except ValueError:
+        return {}
+
+
+def redact_msg91_debug_value(value, secrets=None):
+    text = str(value or '')
+    for secret in secrets or []:
+        if secret:
+            text = text.replace(str(secret), '[REDACTED]')
+    text = re.sub(r'\b91(\d{2})\d{6}(\d{2})\b', r'91\1******\2', text)
+    text = re.sub(r'\b(\d{2})\d{6}(\d{2})\b', r'\1******\2', text)
+    return text
+
+
+def msg91_verify_access_token(auth_token, access_token, timeout=15):
+    response = requests.post(
+        f'{MSG91_WIDGET_BASE_URL}/verifyAccessToken',
+        data={'authkey': auth_token, 'access-token': access_token},
+        timeout=timeout,
+    )
+    response.raise_for_status()
+    try:
+        return response.json()
+    except ValueError:
+        return {}
+
+
+def extract_nested_value(data, names):
+    if isinstance(data, dict):
+        for key, value in data.items():
+            if str(key).lower().replace('_', '').replace('-', '') in names and value:
+                return value
+        for value in data.values():
+            found = extract_nested_value(value, names)
+            if found:
+                return found
+    elif isinstance(data, list):
+        for item in data:
+            found = extract_nested_value(item, names)
+            if found:
+                return found
+    return None
+
+
+def extract_msg91_req_id(data):
+    return extract_nested_value(data, {'reqid', 'requestid'})
+
+
+def extract_msg91_access_token(data):
+    token = extract_nested_value(data, {'accesstoken', 'access_token', 'token', 'jwttoken'})
+    if token:
+        return str(token)
+    message = data.get('message') if isinstance(data, dict) else None
+    if isinstance(message, str) and len(message) > 20 and '.' in message:
+        return message
+    return None
+
+
+def extract_msg91_verified_mobile(data):
+    value = extract_nested_value(data, {'identifier', 'mobile', 'mobileno', 'phonenumber', 'phone', 'number'})
+    return normalize_indian_mobile(value)
+
+
 ACTIVITY_TIMEOUT = timedelta(minutes=5)
 
 
@@ -679,16 +840,210 @@ class LoginView(APIView):
                 student = Students.objects.get(user=user)
             except Students.DoesNotExist:
                 return Response({'error': 'Student account not found.'}, status=403)
-            record_user_login(user, 'student', student=student)
-            return Response({
-                **get_tokens_for_user(user),
-                'user_type': 'student',
-                'student_id': student.student_id,
-                'student_pk': student.id,
-                'name': f"{student.first_name} {student.last_name or ''}".strip(),
-            })
+            return Response(build_student_login_payload(user, student))
 
         return Response({'error': 'Invalid user type.'}, status=400)
+
+
+class StudentOtpSendView(APIView):
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        widget_id, auth_token, config_error = check_msg91_config()
+        if config_error:
+            return config_error
+
+        normalized_mobile = normalize_indian_mobile(request.data.get('mobile_no'))
+        if not normalized_mobile:
+            return Response({'error': 'Enter a valid 10-digit mobile number.'}, status=400)
+
+        student, lookup_error = find_active_student_by_mobile(normalized_mobile)
+        if lookup_error:
+            return lookup_error
+
+        ip = get_client_ip(request)
+        cooldown_key = f'otp:send:cooldown:{normalized_mobile}'
+        if cache.get(cooldown_key):
+            return Response({'error': 'Please wait before requesting another OTP.', 'resend_after': OTP_SEND_COOLDOWN_SECONDS}, status=429)
+
+        mobile_count = cache_counter(f'otp:send:hour:mobile:{normalized_mobile}', OTP_HOUR_SECONDS)
+        ip_count = cache_counter(f'otp:send:hour:ip:{ip}', OTP_HOUR_SECONDS)
+        if mobile_count > OTP_SEND_LIMIT_PER_HOUR or ip_count > OTP_SEND_LIMIT_PER_HOUR * 5:
+            return Response({'error': 'Too many OTP requests. Please try again later.'}, status=429)
+
+        try:
+            msg91_url = f'{MSG91_WIDGET_BASE_URL}/sendOtpMobile'
+            logger.warning('MSG91 send OTP request URL: %s', msg91_url)
+            response = requests.post(
+                msg91_url,
+                json={
+                    'widgetId': widget_id,
+                    'tokenAuth': auth_token,
+                    'identifier': normalized_mobile,
+                },
+                headers={'Content-Type': 'application/json'},
+                timeout=15,
+            )
+            logger.warning('MSG91 send OTP HTTP status: %s', response.status_code)
+            logger.warning('MSG91 send OTP response body: %s', redact_msg91_debug_value(response.text, [auth_token]))
+            response.raise_for_status()
+            try:
+                msg91_response = response.json()
+            except ValueError:
+                msg91_response = {}
+        except requests.RequestException as exc:
+            logger.exception('MSG91 send OTP request failed: %s', redact_msg91_debug_value(str(exc), [auth_token]))
+            return Response({'error': 'Unable to send OTP right now. Please try again.'}, status=502)
+
+        msg91_type = str(msg91_response.get('type', '')).lower() if isinstance(msg91_response, dict) else ''
+        if response.status_code != 200 or msg91_type != 'success':
+            logger.warning('MSG91 send OTP failed response: %s', redact_msg91_debug_value(msg91_response, [auth_token]))
+            return Response({'error': 'Unable to send OTP right now. Please try again.'}, status=502)
+
+        req_id = extract_msg91_req_id(msg91_response) or str(msg91_response.get('message') or '').strip()
+        if not req_id:
+            logger.warning('MSG91 send OTP success response did not include a request id: %s', redact_msg91_debug_value(msg91_response, [auth_token]))
+            return Response({'error': 'Unable to send OTP right now. Please try again.'}, status=502)
+
+        cache.set(cooldown_key, True, timeout=OTP_SEND_COOLDOWN_SECONDS)
+        cache.set(
+            f'otp:req:{req_id}',
+            {'mobile': normalized_mobile, 'student_id': student.id, 'verify_attempts': 0},
+            timeout=OTP_REQUEST_TTL_SECONDS,
+        )
+
+        return Response({
+            'success': True,
+            'message': 'OTP sent successfully.',
+            'req_id': req_id,
+            'mobile_no': display_mobile(normalized_mobile),
+            'resend_after': OTP_SEND_COOLDOWN_SECONDS,
+        })
+
+
+class StudentOtpResendView(APIView):
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        widget_id, auth_token, config_error = check_msg91_config()
+        if config_error:
+            return config_error
+
+        normalized_mobile = normalize_indian_mobile(request.data.get('mobile_no'))
+        req_id = str(request.data.get('req_id') or '').strip()
+        if not normalized_mobile or not req_id:
+            return Response({'error': 'Mobile number and OTP request id are required.'}, status=400)
+
+        request_state = cache.get(f'otp:req:{req_id}')
+        if not request_state or request_state.get('mobile') != normalized_mobile:
+            return Response({'error': 'OTP has expired. Please request a new OTP.'}, status=400)
+
+        student, lookup_error = find_active_student_by_mobile(normalized_mobile)
+        if lookup_error:
+            return lookup_error
+
+        ip = get_client_ip(request)
+        cooldown_key = f'otp:send:cooldown:{normalized_mobile}'
+        if cache.get(cooldown_key):
+            return Response({'error': 'Please wait before requesting another OTP.', 'resend_after': OTP_SEND_COOLDOWN_SECONDS}, status=429)
+
+        mobile_count = cache_counter(f'otp:send:hour:mobile:{normalized_mobile}', OTP_HOUR_SECONDS)
+        ip_count = cache_counter(f'otp:send:hour:ip:{ip}', OTP_HOUR_SECONDS)
+        if mobile_count > OTP_SEND_LIMIT_PER_HOUR or ip_count > OTP_SEND_LIMIT_PER_HOUR * 5:
+            return Response({'error': 'Too many OTP requests. Please try again later.'}, status=429)
+
+        try:
+            msg91_response = msg91_post('/retryOtp', {
+                'widgetId': widget_id,
+                'tokenAuth': auth_token,
+                'reqId': req_id,
+                'retryChannel': 'SMS',
+            })
+        except requests.RequestException:
+            logger.exception('MSG91 resend OTP request failed')
+            return Response({'error': 'Unable to resend OTP right now. Please try again.'}, status=502)
+
+        next_req_id = extract_msg91_req_id(msg91_response) or req_id
+        cache.set(cooldown_key, True, timeout=OTP_SEND_COOLDOWN_SECONDS)
+        cache.set(
+            f'otp:req:{next_req_id}',
+            {'mobile': normalized_mobile, 'student_id': student.id, 'verify_attempts': 0},
+            timeout=OTP_REQUEST_TTL_SECONDS,
+        )
+
+        return Response({
+            'message': 'OTP resent successfully.',
+            'req_id': next_req_id,
+            'mobile_no': display_mobile(normalized_mobile),
+            'resend_after': OTP_SEND_COOLDOWN_SECONDS,
+        })
+
+
+class StudentOtpVerifyView(APIView):
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        widget_id, auth_token, config_error = check_msg91_config()
+        if config_error:
+            return config_error
+
+        normalized_mobile = normalize_indian_mobile(request.data.get('mobile_no'))
+        req_id = str(request.data.get('req_id') or '').strip()
+        otp = re.sub(r'\D+', '', str(request.data.get('otp') or ''))
+        if not normalized_mobile or not req_id or not otp:
+            return Response({'error': 'Mobile number, request id and OTP are required.'}, status=400)
+
+        request_state = cache.get(f'otp:req:{req_id}')
+        if not request_state or request_state.get('mobile') != normalized_mobile:
+            return Response({'error': 'OTP has expired. Please request a new OTP.'}, status=400)
+
+        attempts = int(request_state.get('verify_attempts') or 0) + 1
+        if attempts > OTP_VERIFY_LIMIT:
+            cache.delete(f'otp:req:{req_id}')
+            return Response({'error': 'Too many invalid OTP attempts. Please request a new OTP.'}, status=429)
+
+        request_state['verify_attempts'] = attempts
+        cache.set(f'otp:req:{req_id}', request_state, timeout=OTP_VERIFY_TTL_SECONDS)
+
+        ip = get_client_ip(request)
+        if cache_counter(f'otp:verify:ip:{ip}', OTP_HOUR_SECONDS) > OTP_VERIFY_LIMIT * 10:
+            return Response({'error': 'Too many verification attempts. Please try again later.'}, status=429)
+
+        try:
+            verify_response = msg91_post('/verifyOtp', {
+                'widgetId': widget_id,
+                'tokenAuth': auth_token,
+                'reqId': req_id,
+                'otp': otp,
+            })
+        except requests.RequestException:
+            logger.exception('MSG91 verify OTP request failed')
+            return Response({'error': 'Unable to verify OTP right now. Please try again.'}, status=502)
+
+        access_token = extract_msg91_access_token(verify_response)
+        if not access_token:
+            return Response({'error': 'Invalid OTP or OTP has expired.'}, status=400)
+
+        try:
+            token_response = msg91_verify_access_token(auth_token, access_token)
+        except requests.RequestException:
+            logger.exception('MSG91 access token verification failed')
+            return Response({'error': 'Unable to verify OTP right now. Please try again.'}, status=502)
+
+        verified_mobile = extract_msg91_verified_mobile(token_response)
+        if verified_mobile and verified_mobile != normalized_mobile:
+            return Response({'error': 'OTP verification did not match the requested mobile number.'}, status=400)
+        if not verified_mobile:
+            return Response({'error': 'Unable to verify mobile number. Please try again.'}, status=400)
+
+        student, lookup_error = find_active_student_by_mobile(normalized_mobile)
+        if lookup_error:
+            return lookup_error
+        if student.id != request_state.get('student_id'):
+            return Response({'error': 'Student account mismatch. Please request a new OTP.'}, status=400)
+
+        cache.delete(f'otp:req:{req_id}')
+        return Response(build_student_login_payload(student.user, student))
 
 
 class LogoutView(APIView):
@@ -795,7 +1150,7 @@ class AdminDashboardView(APIView):
             })
             staff_qs = Employee.objects.filter(branch__in=values)
             branch_batches = Batches.objects.filter(branch__in=values)
-            branch_students = Students.objects.filter(branch__in=values).distinct()
+            branch_students = active_branch_students
             branch_attendance = StudentAttendance.objects.filter(staff__branch__in=values).count()
             branch_daily_sessions = DailySessionCompletion.objects.filter(
                 faculty__branch__in=values,
@@ -1141,6 +1496,13 @@ class CourseDetailView(generics.RetrieveUpdateDestroyAPIView):
     serializer_class = CourseSerializer
     permission_classes = [IsAuthenticated]
     parser_classes = [MultiPartParser, FormParser, JSONParser]
+
+    def perform_update(self, serializer):
+        logsheet_changed = 'course_logsheet' in self.request.FILES
+        course = serializer.save()
+        if logsheet_changed:
+            for batch in Batches.objects.filter(course_name=course):
+                sync_missing_sessions_from_logsheet(batch, prefer_course_logsheet=True)
 
 
 class GalleryItemListCreateView(generics.ListCreateAPIView):
@@ -4133,6 +4495,11 @@ def staff_quiz_results(request):
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
 def batch_sessions(request, batch_id):
+    try:
+        batch = Batches.objects.get(id=batch_id)
+        sync_missing_sessions_from_logsheet(batch)
+    except Batches.DoesNotExist:
+        pass
     sessions = CourseSession.objects.filter(batch__id=batch_id).order_by('session_number')
     return Response(CourseSessionSerializer(sessions, many=True).data)
 
@@ -4145,6 +4512,7 @@ def student_sessions(request):
         if not student.assigned_batch:
             return Response([])
 
+        sync_missing_sessions_from_logsheet(student.assigned_batch)
         sessions = CourseSession.objects.filter(batch=student.assigned_batch).order_by('session_number')
         data = []
 
@@ -4203,6 +4571,7 @@ def student_sessions(request):
 def get_batch_sessions_with_logsheet(request, batch_id):
     try:
         batch = Batches.objects.get(id=batch_id)
+        sync_missing_sessions_from_logsheet(batch)
         sessions = CourseSession.objects.filter(batch=batch).order_by('session_number')
 
         # Get active students in this batch
@@ -5067,8 +5436,8 @@ def process_completion_request(request, pk):
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
 def get_batch_students(request, batch_id):
-    students = Students.objects.filter(assigned_batch__id=batch_id)
-    return Response(StudentSerializer(students, many=True).data)
+    students = Students.objects.filter(assigned_batch__id=batch_id).select_related('assigned_batch', 'assigned_staff')
+    return Response([_student_detail_payload(student) for student in students])
 
 
 @api_view(['GET'])
@@ -5105,6 +5474,10 @@ def _student_detail_payload(student):
     present_att = len([a for a in att_qs if str(a.status).lower() == 'present'])
     test_qs = list(TestResult.objects.filter(student=student).select_related('test').order_by('-submitted_at'))
     quiz_qs = list(QuizAttempt.objects.filter(student=student).select_related('quiz').order_by('-submitted_at'))
+    assigned_quiz_qs = Quiz.objects.filter(
+        batch=student.assigned_batch,
+        is_published=True
+    ).prefetch_related('questions').order_by('-created_at') if student.assigned_batch_id else Quiz.objects.none()
     leave_qs = list(StudentLeaveApplication.objects.filter(student=student).order_by('-applied_at'))
     progress_qs = Student_Session_Progress.objects.filter(student=student)
     total_sessions = progress_qs.count()
@@ -5137,7 +5510,16 @@ def _student_detail_payload(student):
             'passing_marks': a.quiz.passing_marks if a.quiz else 50,
             'submitted_at': str(a.submitted_at)[:10] if a.submitted_at else '',
         } for a in quiz_qs],
-        'quiz_count': len(quiz_qs),
+        'quiz_count': assigned_quiz_qs.count(),
+        'quiz_attempt_count': len(quiz_qs),
+        'assigned_quizzes': [{
+            'id': q.id,
+            'quiz_title': q.title,
+            'total_questions': q.questions.count(),
+            'passing_marks': q.passing_marks,
+            'duration_minutes': q.duration_minutes,
+            'status': 'completed' if any(a.quiz_id == q.id for a in quiz_qs) else 'assigned',
+        } for q in assigned_quiz_qs],
         'leave_requests': [{
             'leave_type': l.leave_type,
             'start_date': str(l.start_date),
@@ -6201,7 +6583,7 @@ def admin_employee_tracking(request):
         values = _tracking_branch_values(item)
         staff_qs = Employee.objects.filter(branch__in=values)
         branch_batches = Batches.objects.filter(branch__in=values)
-        branch_students = Students.objects.filter(branch__in=values).distinct()
+        branch_students = get_active_students_queryset().filter(branch__in=values).distinct()
         branch_attendance = StudentAttendance.objects.filter(staff__branch__in=values).count()
         branch_daily_sessions = DailySessionCompletion.objects.filter(
             faculty__branch__in=values,
@@ -7463,6 +7845,131 @@ def is_valid_pdf_file(logsheet_path):
         return False
 
 
+def _clean_session_text(value):
+    return re.sub(r'\s+', ' ', str(value or '')).strip(' |:-\t\r\n')
+
+
+def _safe_session_payload(session_number, content):
+    cleaned_content = _clean_session_text(content) or 'Course Content'
+    title_prefix = f"Session {session_number}: "
+    title_max_length = CourseSession._meta.get_field('title').max_length or 255
+    available_title_length = max(title_max_length - len(title_prefix), 20)
+
+    title_candidate = cleaned_content
+    if len(title_candidate) > available_title_length:
+        title_candidate = title_candidate[:available_title_length - 3].rstrip() + '...'
+
+    return {
+        'session_number': session_number,
+        'title': f"{title_prefix}{title_candidate}",
+        'topics': cleaned_content[:1000],
+    }
+
+
+def _assign_pdf_session_number(original_number, used_numbers, last_number):
+    """
+    Keep the PDF number when it is usable, otherwise preserve the extra PDF row
+    with the next available number. This avoids silently dropping duplicate or
+    repeated session labels from logsheets.
+    """
+    if original_number not in used_numbers and original_number > 0:
+        return original_number
+
+    next_number = max(last_number, max(used_numbers) if used_numbers else 0) + 1
+    while next_number in used_numbers:
+        next_number += 1
+    return next_number
+
+
+def _parse_session_markers_anywhere(full_text, batch_id=None, debug=False):
+    marker_pattern = re.compile(
+        r'\b(?:Session|Module|Day|Chapter|Unit|Lesson)\s*[-:\s]*([0-9]{1,3})\s*[:.)-]?\s*',
+        re.IGNORECASE
+    )
+    matches = list(marker_pattern.finditer(full_text))
+    if not matches:
+        return []
+
+    sessions = []
+    used_numbers = set()
+    last_number = 0
+
+    for index, match in enumerate(matches):
+        original_number = int(match.group(1))
+        content_start = match.end()
+        content_end = matches[index + 1].start() if index + 1 < len(matches) else len(full_text)
+        content = full_text[content_start:content_end]
+
+        content = re.sub(r'\bPage\s+\d+\b', ' ', content, flags=re.IGNORECASE)
+        content = _clean_session_text(content)
+        if not content or content.lower() in {'session', 'module', 'day', 'chapter', 'unit', 'lesson'}:
+            continue
+
+        session_number = _assign_pdf_session_number(original_number, used_numbers, last_number)
+        used_numbers.add(session_number)
+        last_number = max(last_number, session_number)
+        sessions.append(_safe_session_payload(session_number, content))
+
+    if debug:
+        print(
+            f"[EXTRACT] Batch {batch_id}: Detected {len(matches)} session markers, "
+            f"kept {len(sessions)} sessions"
+        )
+
+    return sessions
+
+
+def _parse_numbered_rows(lines, batch_id=None, debug=False):
+    sessions = []
+    used_numbers = set()
+    last_number = 0
+    numbered_patterns = [
+        re.compile(r'^\s*(\d{1,3})\s*\|\s*(.+)$'),
+        re.compile(r'^\s*(\d{1,3})\s*[-.:)]\s+(.+)$'),
+        re.compile(r'^\s*(\d{1,3})\s{2,}(.+)$'),
+    ]
+
+    for line in lines:
+        for pattern in numbered_patterns:
+            match = pattern.match(line)
+            if not match:
+                continue
+            original_number = int(match.group(1))
+            content = _clean_session_text(match.group(2))
+            if len(content) < 3 or content.lower().startswith(('page', 'table', 'figure', 's.no')):
+                break
+            session_number = _assign_pdf_session_number(original_number, used_numbers, last_number)
+            used_numbers.add(session_number)
+            last_number = max(last_number, session_number)
+            sessions.append(_safe_session_payload(session_number, content))
+            break
+
+    if debug:
+        print(f"[EXTRACT] Batch {batch_id}: Numbered-row fallback kept {len(sessions)} sessions")
+
+    return sessions
+
+
+def _normalize_session_match_text(value):
+    value = re.sub(r'^session\s+\d+\s*:\s*', '', str(value or ''), flags=re.IGNORECASE)
+    value = re.sub(r'[^a-z0-9]+', ' ', value.lower())
+    return re.sub(r'\s+', ' ', value).strip()
+
+
+def _session_title_similarity(left, right):
+    from difflib import SequenceMatcher
+
+    left_norm = _normalize_session_match_text(left)
+    right_norm = _normalize_session_match_text(right)
+    if not left_norm or not right_norm:
+        return 0
+
+    if left_norm in right_norm or right_norm in left_norm:
+        return 1
+
+    return SequenceMatcher(None, left_norm[:220], right_norm[:220]).ratio()
+
+
 def parse_sessions_from_text(full_text, batch_id=None, debug=False):
     """
     Parse session information from extracted PDF text.
@@ -7484,149 +7991,19 @@ def parse_sessions_from_text(full_text, batch_id=None, debug=False):
         preview = full_text[:2000].replace('\n', '\\n')
         print(f"[EXTRACT] Batch {batch_id}: First 2000 chars:\n{preview}\n")
     
-    lines = [line.strip() for line in full_text.splitlines() if line.strip()]
-    sessions = {}  # Use dict to deduplicate by session_number
-    
-    # Pattern 1: "Session 1", "Session-1", "SESSION 1", "Module 1", "Day 1", etc.
-    pattern1 = re.compile(
-        r'^(?:Session|Module|Day|Chapter|Unit|Lesson|Topic)\s*[-:\s]?\s*(\d+)\s*[-:.\s]?\s*(.*)$',
-        re.IGNORECASE
-    )
-    
-    # Pattern 2: "1. Topic Name", "1) Topic Name", "1 - Topic Name", "1: Topic Name"
-    pattern2 = re.compile(r'^(\d+)\s*[-.:)]\s+(.+)$')
-    
-    # Pattern 3: "Session 61: WEB ARCHITECTURE" - with number and colon
-    pattern3 = re.compile(r'^(?:Session|Module|Day|Chapter|Unit)\s+(\d+)\s*:\s*(.+)$', re.IGNORECASE)
-    
-    # Pattern 4: Table format - pipe-separated with number in first column
-    pattern4 = re.compile(r'^\s*(\d+)\s*\|\s*(.+)$')
-    
-    current_session_num = None
-    current_content = []
-    
-    for line in lines:
-        # Try pattern 1 (Session 1, Module-1, etc.)
-        match = pattern1.match(line)
-        if match:
-            if current_session_num is not None:
-                # Save previous session
-                if current_session_num not in sessions:
-                    sessions[current_session_num] = {
-                        'session_number': current_session_num,
-                        'content': current_content
-                    }
-            
-            current_session_num = int(match.group(1))
-            current_content = [match.group(2)] if match.group(2).strip() else []
-            continue
-        
-        # Try pattern 3 (Session 61: Title)
-        match = pattern3.match(line)
-        if match:
-            if current_session_num is not None:
-                if current_session_num not in sessions:
-                    sessions[current_session_num] = {
-                        'session_number': current_session_num,
-                        'content': current_content
-                    }
-            
-            current_session_num = int(match.group(1))
-            current_content = [match.group(2)] if match.group(2).strip() else []
-            continue
-        
-        # Try pattern 2 (1. Topic or 1) Topic)
-        match = pattern2.match(line)
-        if match and current_session_num is None:
-            # Only use pattern2 if we haven't found any explicit session markers yet
-            num = int(match.group(1))
-            if num not in sessions:
-                sessions[num] = {
-                    'session_number': num,
-                    'content': [match.group(2)]
-                }
-            current_session_num = num
-            current_content = []
-            continue
-        
-        # Try pattern 4 (table format with pipes)
-        match = pattern4.match(line)
-        if match and current_session_num is None:
-            num = int(match.group(1))
-            if num not in sessions:
-                sessions[num] = {
-                    'session_number': num,
-                    'content': [match.group(2)]
-                }
-            current_session_num = num
-            current_content = []
-            continue
-        
-        # Accumulate content for current session
-        if current_session_num is not None:
-            current_content.append(line)
-    
-    # Don't forget the last session
-    if current_session_num is not None and current_session_num not in sessions:
-        sessions[current_session_num] = {
-            'session_number': current_session_num,
-            'content': current_content
-        }
-    
-    # If no explicit patterns found, try to extract numbered lines as sessions (fallback)
-    if not sessions:
-        if debug:
-            print(f"[EXTRACT] Batch {batch_id}: No explicit session patterns found, using fallback approach")
-        
-        for line in lines:
-            # Look for lines that start with just a number
-            match = re.match(r'^(\d+)\s+(.+)$', line)
-            if match:
-                num = int(match.group(1))
-                title = match.group(2).strip()
-                
-                # Only include if title looks meaningful (at least 3 chars, not just metadata)
-                if len(title) >= 3 and not title.lower().startswith(('page', 'table', 'figure')):
-                    if num not in sessions:
-                        sessions[num] = {
-                            'session_number': num,
-                            'content': [title]
-                        }
-    
-    # Convert to output format
-    result = []
-    for num in sorted(sessions.keys()):
-        session_data = sessions[num]
-        content = ' '.join(session_data['content']).strip()
-        
-        if not content:
-            content = 'Course Content'
-        
-        # Extract title (first meaningful part)
-        title_candidate = content.split('|')[0].split('-')[0].split('\n')[0].strip()
-        if len(title_candidate) < 3:
-            title_candidate = 'Course Content'
-        
-        # Truncate if too long
-        if len(title_candidate) > 255:
-            title_candidate = title_candidate[:252] + '...'
-        
-        title = f"Session {num}: {title_candidate}"
-        topics = content[len(title_candidate):].strip() if content.startswith(title_candidate) else content
-        
-        result.append({
-            'session_number': num,
-            'title': title,
-            'topics': topics[:500] if topics else ''  # Limit topics length
-        })
-    
+    normalized_text = re.sub(r'\r\n?', '\n', full_text)
+    sessions = _parse_session_markers_anywhere(normalized_text, batch_id=batch_id, debug=debug)
+    if sessions:
+        return sorted(sessions, key=lambda item: item['session_number'])
+
     if debug:
-        print(f"[EXTRACT] Batch {batch_id}: Parsed {len(result)} unique sessions")
-    
-    return result
+        print(f"[EXTRACT] Batch {batch_id}: No explicit session markers found, using numbered-row fallback")
+
+    lines = [line.strip() for line in normalized_text.splitlines() if line.strip()]
+    return sorted(_parse_numbered_rows(lines, batch_id=batch_id, debug=debug), key=lambda item: item['session_number'])
 
 
-def extract_sessions_from_logsheet(batch, debug=False):
+def extract_sessions_from_logsheet(batch, debug=False, prefer_course_logsheet=False):
     """
     Extract sessions from batch logsheet.
     If batch logsheet file is missing, fallback to course logsheet.
@@ -7634,21 +8011,22 @@ def extract_sessions_from_logsheet(batch, debug=False):
     try:
         candidates = []
 
-        # 1. Try batch logsheet only if actual file exists
-        if batch.course_logsheet:
-            batch_path = getattr(batch.course_logsheet, "path", None)
+        def add_batch_logsheet_candidate():
+            if batch.course_logsheet:
+                batch_path = getattr(batch.course_logsheet, "path", None)
 
-            if debug:
-                print(f"[EXTRACT] Batch {batch.id}: Checking batch.course_logsheet")
-                print(f"[EXTRACT] Batch {batch.id}: Batch field={batch.course_logsheet.name}")
-                print(f"[EXTRACT] Batch {batch.id}: Batch path={batch_path}")
-                print(f"[EXTRACT] Batch {batch.id}: Batch file exists={os.path.exists(batch_path) if batch_path else False}")
+                if debug:
+                    print(f"[EXTRACT] Batch {batch.id}: Checking batch.course_logsheet")
+                    print(f"[EXTRACT] Batch {batch.id}: Batch field={batch.course_logsheet.name}")
+                    print(f"[EXTRACT] Batch {batch.id}: Batch path={batch_path}")
+                    print(f"[EXTRACT] Batch {batch.id}: Batch file exists={os.path.exists(batch_path) if batch_path else False}")
 
-            if batch_path and os.path.exists(batch_path):
-                candidates.append((batch.course_logsheet, "batch.course_logsheet"))
+                if batch_path and os.path.exists(batch_path):
+                    candidates.append((batch.course_logsheet, "batch.course_logsheet"))
 
-        # 2. Fall back to course logsheet if the batch file is missing or unreadable.
-        if batch.course_name and batch.course_name.course_logsheet:
+        def add_course_logsheet_candidate():
+            if not (batch.course_name and batch.course_name.course_logsheet):
+                return
             course_path = getattr(batch.course_name.course_logsheet, "path", None)
 
             if debug:
@@ -7659,6 +8037,13 @@ def extract_sessions_from_logsheet(batch, debug=False):
 
             if course_path and os.path.exists(course_path):
                 candidates.append((batch.course_name.course_logsheet, "course.course_logsheet"))
+
+        if prefer_course_logsheet:
+            add_course_logsheet_candidate()
+            add_batch_logsheet_candidate()
+        else:
+            add_batch_logsheet_candidate()
+            add_course_logsheet_candidate()
 
         if not candidates:
             if debug:
@@ -7709,12 +8094,175 @@ def extract_sessions_from_logsheet(batch, debug=False):
         return []
 
 
+def sync_missing_sessions_from_logsheet(batch, debug=False, prefer_course_logsheet=False):
+    """
+    Non-destructively align DB sessions with the PDF logsheet.
+    Existing progress rows are preserved by updating CourseSession rows in-place.
+    """
+    sessions_data = extract_sessions_from_logsheet(
+        batch,
+        debug=debug,
+        prefer_course_logsheet=prefer_course_logsheet
+    )
+    if not sessions_data:
+        return 0
+
+    title_max_length = CourseSession._meta.get_field('title').max_length or 255
+    for item in sessions_data:
+        title = item.get('title', '')
+        if len(title) > title_max_length:
+            title = title[:title_max_length - 3].rstrip() + '...'
+        item['title'] = title
+
+    existing_sessions = list(CourseSession.objects.filter(batch=batch).order_by('session_number'))
+    if not existing_sessions:
+        new_sessions = [
+            CourseSession.objects.create(
+                batch=batch,
+                session_number=item.get('session_number'),
+                title=item.get('title', ''),
+                topics=item.get('topics', ''),
+                staff_completed=False,
+                session_enabled=True
+            )
+            for item in sessions_data
+        ]
+        _ensure_student_session_rows(batch, new_sessions)
+        return len(new_sessions)
+
+    parsed_count = len(sessions_data)
+    existing_count = len(existing_sessions)
+
+    if parsed_count <= existing_count:
+        existing_by_number = {session.session_number: session for session in existing_sessions}
+        existing_numbers = set(existing_by_number.keys())
+        new_sessions = []
+        for item in sessions_data:
+            session_number = item.get('session_number')
+            existing_session = existing_by_number.get(session_number)
+            if existing_session:
+                update_fields = []
+                if existing_session.title != item.get('title', ''):
+                    existing_session.title = item.get('title', '')
+                    update_fields.append('title')
+                if (existing_session.topics or '') != (item.get('topics', '') or ''):
+                    existing_session.topics = item.get('topics', '')
+                    update_fields.append('topics')
+                if update_fields:
+                    existing_session.save(update_fields=update_fields)
+                continue
+            session = CourseSession.objects.create(
+                batch=batch,
+                session_number=session_number,
+                title=item.get('title', ''),
+                topics=item.get('topics', ''),
+                staff_completed=False,
+                session_enabled=True
+            )
+            new_sessions.append(session)
+            existing_numbers.add(session_number)
+
+        if new_sessions:
+            _ensure_student_session_rows(batch, new_sessions)
+        return len(new_sessions)
+
+    new_sessions = []
+    updated_count = 0
+
+    with transaction.atomic():
+        temp_sessions = list(CourseSession.objects.filter(batch=batch).order_by('session_number'))
+        for session in temp_sessions:
+            session.session_number = -session.id
+            session.save(update_fields=['session_number'])
+
+        unmatched_sessions = temp_sessions[:]
+        used_existing = set()
+
+        for item in sessions_data:
+            best_session = None
+            best_score = 0
+            for session in unmatched_sessions:
+                if session.id in used_existing:
+                    continue
+                score = _session_title_similarity(item.get('title', ''), session.title)
+                if score > best_score:
+                    best_score = score
+                    best_session = session
+
+            if best_session and best_score >= 0.55:
+                best_session.session_number = item.get('session_number')
+                best_session.title = item.get('title', '')
+                best_session.topics = item.get('topics', '')
+                best_session.save(update_fields=['session_number', 'title', 'topics'])
+                used_existing.add(best_session.id)
+                updated_count += 1
+                continue
+
+            session = CourseSession.objects.create(
+                batch=batch,
+                session_number=item.get('session_number'),
+                title=item.get('title', ''),
+                topics=item.get('topics', ''),
+                staff_completed=False,
+                session_enabled=True
+            )
+            new_sessions.append(session)
+
+        next_number = parsed_count + 1
+        for session in unmatched_sessions:
+            if session.id in used_existing:
+                continue
+            while CourseSession.objects.filter(batch=batch, session_number=next_number).exists():
+                next_number += 1
+            session.session_number = next_number
+            session.save(update_fields=['session_number'])
+            next_number += 1
+
+    if new_sessions:
+        _ensure_student_session_rows(batch, new_sessions)
+
+    if debug:
+        print(
+            f"[SESSION_SYNC] Batch {batch.id}: added {len(new_sessions)} missing sessions, "
+            f"realigned {updated_count} existing sessions"
+        )
+
+    return len(new_sessions)
+
+
+def _ensure_student_session_rows(batch, sessions):
+    students = Students.objects.filter(assigned_batch=batch)
+    for student in students:
+        for session in sessions:
+            Student_Session_Progress.objects.get_or_create(
+                student=student,
+                session=session,
+                defaults={
+                    'completed': False,
+                    'staff_completed': False,
+                    'student_status': 'not_started',
+                    'has_doubt': False,
+                    'doubt_resolved': False,
+                }
+            )
+            StudentSessionStatus.objects.get_or_create(
+                student=student,
+                session=session,
+                defaults={
+                    'staff_completed': False,
+                    'student_status': 'pending',
+                }
+            )
+
+
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
 def extract_and_store_sessions(request, batch_id):
     """
     Extract sessions from batch/course logsheet and store in database.
     Automatically uses course_logsheet if batch_logsheet is empty.
+    Existing staff completion ticks, student session progress, doubts, and
+    notifications are preserved.
     """
     try:
         print(f"\n{'='*60}")
@@ -7731,23 +8279,7 @@ def extract_and_store_sessions(request, batch_id):
             return Response({
                 'error': 'No logsheet uploaded for this batch or course. Please upload a PDF logsheet first.'
             }, status=400)
-        
-        # ========== DELETE ALL EXISTING SESSIONS AND RELATED DATA ==========
-        existing_sessions = CourseSession.objects.filter(batch=batch)
-        existing_count = existing_sessions.count()
-        
-        if existing_count > 0:
-            # Delete all related data first (important for clean slate)
-            Student_Session_Progress.objects.filter(session__batch=batch).delete()
-            StudentSessionStatus.objects.filter(session__batch=batch).delete()
-            DoubtResponse.objects.filter(doubt__session__batch=batch).delete()
-            SessionNotification.objects.filter(session__batch=batch).delete()
-            
-            # Delete the sessions themselves
-            existing_sessions.delete()
-            print(f"[SESSION_EXTRACT] Deleted {existing_count} old sessions and all related data")
-        
-        # Extract sessions from PDF (with debug logging)
+
         sessions_data = extract_sessions_from_logsheet(batch, debug=True)
         
         if not sessions_data:
@@ -7763,74 +8295,26 @@ def extract_and_store_sessions(request, batch_id):
             print(f"[SESSION_EXTRACT] ERROR: {error_msg}")
             return Response({'error': error_msg}, status=400)
         
-        print(f"[SESSION_EXTRACT] Successfully extracted {len(sessions_data)} sessions")
-        
-        # ========== CREATE NEW SESSIONS ==========
-        new_sessions = []
-        for s in sessions_data:
-            session = CourseSession.objects.create(
-                batch=batch,
-                session_number=s['session_number'],
-                title=s['title'],
-                topics=s.get('topics', ''),
-                staff_completed=False,  # Fresh session - not completed by staff yet
-                session_enabled=True
-            )
-            new_sessions.append(session)
-            print(f"[SESSION_EXTRACT] Created Session {session.session_number}: {session.title}")
-        
-        # ========== CREATE FRESH PROGRESS FOR ALL ACTIVE STUDENTS ==========
-        from .models import CompletedStudent
-        completed_ids = CompletedStudent.objects.values_list('original_student_id', flat=True)
-        completed_ids_int = []
-        for cid in completed_ids:
-            try:
-                completed_ids_int.append(int(cid))
-            except:
-                pass
-        
-        # Get all active students in this batch (not completed)
-        students = Students.objects.filter(
-            assigned_batch=batch
-        ).exclude(
-            id__in=completed_ids_int
-        )
-        
-        created_progress = 0
-        for student in students:
-            for session in new_sessions:
-                # Create fresh progress for this student
-                Student_Session_Progress.objects.create(
-                    student=student,
-                    session=session,
-                    completed=False,
-                    staff_completed=False,
-                    student_status='not_started',
-                    has_doubt=False,
-                    doubt_resolved=False
-                )
-                
-                StudentSessionStatus.objects.create(
-                    student=student,
-                    session=session,
-                    staff_completed=False,
-                    student_status='pending'
-                )
-                created_progress += 1
-            print(f"[SESSION_EXTRACT] Created progress for {student.first_name} ({student.student_id})")
+        before_count = CourseSession.objects.filter(batch=batch).count()
+        added_count = sync_missing_sessions_from_logsheet(batch, debug=True)
+        sessions = CourseSession.objects.filter(batch=batch).order_by('session_number')
+        students_count = Students.objects.filter(assigned_batch=batch).count()
         
         print(f"\n[SESSION_EXTRACT] COMPLETE:")
-        print(f"  ? Total sessions created: {len(new_sessions)}")
-        print(f"  ? Active students: {students.count()}")
-        print(f"  ? Progress records: {created_progress}")
+        print(f"  ? PDF sessions detected: {len(sessions_data)}")
+        print(f"  ? Existing sessions before sync: {before_count}")
+        print(f"  ? Missing sessions added: {added_count}")
+        print(f"  ? Total sessions now: {sessions.count()}")
+        print(f"  ? Staff/student progress preserved")
         print(f"{'='*60}\n")
         
         return Response({
             'success': True,
-            'message': f'Successfully extracted {len(new_sessions)} fresh sessions. Progress created for {students.count()} active students.',
-            'sessions': CourseSessionSerializer(new_sessions, many=True).data,
-            'total_sessions': len(new_sessions),
-            'students_updated': students.count()
+            'message': f'Session sheet synced safely. {added_count} missing sessions added; existing staff completion ticks were preserved.',
+            'sessions': CourseSessionSerializer(sessions, many=True).data,
+            'total_sessions': sessions.count(),
+            'students_updated': students_count,
+            'preserved_progress': True,
         })
         
     except Batches.DoesNotExist:

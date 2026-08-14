@@ -566,7 +566,7 @@ export function CounselorStudents() {
       const batchesWithFilteredStudents = await Promise.all(
         batches.map(async (batch) => {
           // Fetch students for this specific batch
-          const studentsRes = await api.get(`/students/?assigned_batch=${batch.id}`)
+          const studentsRes = await api.get(`/batches/${batch.id}/students/`)
           const batchStudentsRaw = studentsRes.data.results || studentsRes.data || []
 
           // IMPORTANT: Only include students whose assigned_batch matches this batch ID
@@ -574,11 +574,9 @@ export function CounselorStudents() {
           const uniqueBatchStudentsMap = new Map()
           batchStudentsRaw.forEach(student => {
             // Check if student is actually assigned to this batch
-            if (student.assigned_batch === batch.id && !uniqueBatchStudentsMap.has(student.id)) {
-              const enrichedStudent = studentMap.get(student.id)
-              if (enrichedStudent) {
-                uniqueBatchStudentsMap.set(student.id, enrichedStudent)
-              }
+            if (Number(student.assigned_batch) === Number(batch.id) && !uniqueBatchStudentsMap.has(student.id)) {
+              const enrichedStudent = { ...(studentMap.get(student.id) || {}), ...student }
+              uniqueBatchStudentsMap.set(student.id, enrichedStudent)
             }
           })
 
@@ -660,7 +658,7 @@ export function CounselorStudents() {
     setModalOpen(true)
   }
 
-  if (loading && !targetStudentId) return <div className="counselor-root"><Styles /><Spin /></div>
+  if (loading) return <div className="counselor-root"><Styles /><Spin /></div>
 
   if (!counselorBranch) {
     return (
@@ -803,7 +801,11 @@ export function CounselorStudents() {
       {/* Batches View - Show Batch Cards */}
       {batchViewMode === 'batches' && (
         <div className="counselor-row-grid-2">
-          {staffBatches.length === 0 ? (
+          {loading && staffBatches.length === 0 ? (
+            <div className="counselor-card" style={{ padding: 40, textAlign: 'center', gridColumn: '1/-1' }}>
+              <Spin />
+            </div>
+          ) : staffBatches.length === 0 ? (
             <div className="counselor-card" style={{ padding: 40, textAlign: 'center', gridColumn: '1/-1' }}>
               <Empty msg="No batches found for this staff" icon="fa-layer-group" />
             </div>
@@ -878,12 +880,16 @@ export function CounselorStudents() {
 
           {/* Students Grid */}
           <div className="counselor-row-grid-2">
-            {selectedBatch.students?.length === 0 ? (
+            {loading && !selectedBatch.students ? (
+              <div className="counselor-card" style={{ padding: 40, textAlign: 'center', gridColumn: '1/-1' }}>
+                <Spin />
+              </div>
+            ) : (selectedBatch.students || []).length === 0 ? (
               <div className="counselor-card" style={{ padding: 40, textAlign: 'center', gridColumn: '1/-1' }}>
                 <Empty msg="No students in this batch" icon="fa-user-slash" />
               </div>
             ) : (
-              selectedBatch.students.map((student) => (
+              (selectedBatch.students || []).map((student) => (
                 <div
                   key={student.id}
                   onClick={() => handleStudentClick(student)}
@@ -2720,7 +2726,7 @@ export function CounselorFeeManagement() {
     setFilteredFees(f)
   }
 
-  useEffect(() => { applyFilters(fees, search, statusFilter) }, [search, statusFilter])
+  useEffect(() => { applyFilters(fees, search, statusFilter) }, [fees, search, statusFilter])
 
   const downloadBill = async (feeId, studentName) => {
     const toastId = toast.loading('Generating bill...')

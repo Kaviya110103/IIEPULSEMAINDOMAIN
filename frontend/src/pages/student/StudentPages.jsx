@@ -1428,6 +1428,18 @@ function TakeTestComponent({ test, onDone }) {
   const q = questions[current]
   const answeredCount = Object.keys(answers).length
 
+  if (!q) {
+    return (
+      <div className="student-root">
+        <StudentStyles />
+        <StudentPageHeader title={quiz.title || 'Quiz'} btn={<button className="student-btn student-btn-ghost" onClick={finishQuizView}>Back to Quizzes</button>} />
+        <div className="student-card">
+          <StudentEmpty msg="No questions found for this quiz" icon="fa-question-circle" />
+        </div>
+      </div>
+    )
+  }
+
   return (
     <div className="student-root">
       <StudentStyles />
@@ -1561,6 +1573,7 @@ export function StudentQuizList() {
   const [quizzes, setQuizzes] = useState([])
   const [completedQuizzes, setCompletedQuizzes] = useState([])
   const [loading, setLoading] = useState(true)
+  const [error, setError] = useState('')
   const [activeQuiz, setActiveQuiz] = useState(null)
   const [review, setReview] = useState(null)
   const [reviewLoading, setReviewLoading] = useState(false)
@@ -1584,17 +1597,27 @@ export function StudentQuizList() {
 
   const loadQuizzes = async () => {
     setLoading(true)
+    setError('')
     try {
       const response = await api.get('/quiz/student/')
-      const allQuizzes = response.data.results || response.data || []
+      const payload = response.data?.results || response.data || []
+      const allQuizzes = Array.isArray(payload) ? payload.filter(Boolean) : []
       const available = [], completed = []
       allQuizzes.forEach(quiz => {
-        if (quiz.max_attempts > 0 && quiz.user_attempts >= quiz.max_attempts) completed.push(quiz)
+        const userAttempts = Number(quiz.user_attempts || 0)
+        const maxAttempts = Number(quiz.max_attempts || 0)
+        if (maxAttempts > 0 && userAttempts >= maxAttempts) completed.push(quiz)
         else available.push(quiz)
       })
       setQuizzes(available)
       setCompletedQuizzes(completed)
-    } catch { toast.error('Failed to load quizzes') }
+    } catch (err) {
+      const message = err.response?.data?.error || err.response?.data?.detail || err.message || 'Failed to load quizzes'
+      setError(message)
+      toast.error(message)
+      setQuizzes([])
+      setCompletedQuizzes([])
+    }
     finally { setLoading(false) }
   }
 
@@ -1606,7 +1629,14 @@ export function StudentQuizList() {
     <div className="student-root">
       <StudentStyles />
       <StudentPageHeader title="📝 Excel Quizzes" sub="Attempt your assigned quizzes" />
-      {loading ? <StudentSpin /> : quizzes.length === 0 && completedQuizzes.length === 0 ? (
+      {loading ? <StudentSpin /> : error ? (
+        <div className="student-card">
+          <StudentEmpty msg={error} icon="fa-triangle-exclamation" />
+          <div style={{ textAlign: 'center', paddingBottom: 24 }}>
+            <button className="student-btn student-btn-primary" onClick={loadQuizzes}>Retry</button>
+          </div>
+        </div>
+      ) : quizzes.length === 0 && completedQuizzes.length === 0 ? (
         <div className="student-card"><StudentEmpty msg="No quizzes assigned yet" icon="fa-question-circle" /></div>
       ) : (
         <>
@@ -1774,10 +1804,25 @@ function TakeQuiz({ quiz, onDone }) {
     setSubmitting(true)
     try {
       const response = await api.post(`/quiz/${quiz.id}/take/`, { answers })
-      const resultResponse = await api.get(`/quiz/result/${response.data.attempt_id}/`)
-      setResult(resultResponse.data)
+      try {
+        const resultResponse = await api.get(`/quiz/result/${response.data.attempt_id}/`)
+        setResult(resultResponse.data)
+      } catch {
+        setResult({
+          quiz_title: quiz.title,
+          score: response.data.score || 0,
+          total_marks: response.data.total_marks || 0,
+          percentage: response.data.percentage || 0,
+          is_passed: response.data.is_passed,
+          correct_count: response.data.correct_count || 0,
+          wrong_count: Math.max((response.data.total_questions || questions.length) - (response.data.correct_count || 0), 0),
+          questions: [],
+        })
+      }
       toast.success(autoEnd ? 'Quiz ended because you switched away from the quiz window.' : 'Quiz submitted successfully!')
-    } catch { toast.error('Submission failed') }
+    } catch (err) {
+      toast.error(err.response?.data?.error || 'Submission failed')
+    }
     finally {
       autoEndingRef.current = false
       setSubmitting(false)

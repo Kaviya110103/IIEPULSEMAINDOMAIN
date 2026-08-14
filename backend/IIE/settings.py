@@ -18,7 +18,7 @@ def env_list(key, default=None, sep=','):
         return [item.strip() for item in value.split(sep) if item.strip()]
     return default or []
 
-LOCAL_DOMAIN = os.getenv('LOCAL_DOMAIN', '127.0.0.1:8000').strip()
+LOCAL_DOMAIN = os.getenv('LOCAL_DOMAIN', 'iiepulse.indrainstitute.com').strip()
 LOCAL_LAN_DOMAIN = os.getenv('LOCAL_LAN_DOMAIN', 'iiepulse.indrainstitute.com').strip()
 DEPLOYMENT_DOMAIN = os.getenv('DEPLOYMENT_DOMAIN', 'iiepulse.indrainstitute.com').strip()
 DEPLOYMENT_SCHEME = os.getenv(
@@ -33,7 +33,8 @@ CSRF_TRUSTED_ORIGINS = env_list('DJANGO_CSRF_TRUSTED_ORIGINS', [
     f'http://{LOCAL_LAN_DOMAIN}',
     'http://localhost:5173',
     'http://127.0.0.1:5173',
-    'https://iiepulse.indrainstitute.com',
+    'http://192.168.1.7:5173',
+    'http://192.168.1.6:5173',
 ])
 INSTALLED_APPS = [
     'django.contrib.admin',
@@ -128,30 +129,28 @@ else:
         }
     }
 
-DEBUG = getenv_bool('DJANGO_DEBUG', DEPLOYMENT_IS_LOCAL)
+DEBUG = getenv_bool('DJANGO_DEBUG', _using_sqlite)
 
 SECRET_KEY = os.getenv('DJANGO_SECRET_KEY')
 if not SECRET_KEY:
-    SECRET_KEY = 'iie-pulse-deployment-default-change-this-secret-key-before-production-release'
+    if getenv_bool('DJANGO_DEBUG', _using_sqlite):
+        SECRET_KEY = 'django-insecure-dev-only-change-before-production'
+    else:
+        raise ValueError('DJANGO_SECRET_KEY environment variable is required when DEBUG is disabled.')
 
 ALLOWED_HOSTS = env_list('DJANGO_ALLOWED_HOSTS')
 if not ALLOWED_HOSTS:
     ALLOWED_HOSTS = [
         DEPLOYMENT_DOMAIN,
+    ]
+if DEBUG or DEPLOYMENT_IS_LOCAL:
+    ALLOWED_HOSTS.extend([
         LOCAL_DOMAIN.split(':')[0],
         LOCAL_LAN_DOMAIN.split(':')[0],
-        'iiepulse.indrainstitute.com',
         'localhost',
         '127.0.0.1',
-    ]
-for host in [
-    DEPLOYMENT_DOMAIN.split(':')[0],
-    LOCAL_DOMAIN.split(':')[0],
-    LOCAL_LAN_DOMAIN.split(':')[0],
-    'iiepulse.indrainstitute.com',
-    'localhost',
-    '127.0.0.1',
-]:
+    ])
+for host in [DEPLOYMENT_DOMAIN.split(':')[0]]:
     if host and host not in ALLOWED_HOSTS:
         ALLOWED_HOSTS.append(host)
 
@@ -218,6 +217,9 @@ BREVO_API_KEY = os.getenv('BREVO_API_KEY', '')
 DEFAULT_FROM_EMAIL = os.getenv('DEFAULT_FROM_EMAIL', '')
 DEFAULT_FROM_NAME = os.getenv('DEFAULT_FROM_NAME', 'IIE Pulse')
 APP_PORTAL_URL = os.getenv('APP_PORTAL_URL', DEPLOYMENT_ORIGIN if not DEBUG else '').rstrip('/')
+
+MSG91_WIDGET_ID = os.getenv('MSG91_WIDGET_ID', '').strip()
+MSG91_AUTH_TOKEN = os.getenv('MSG91_AUTH_TOKEN', '').strip()
 
 X_FRAME_OPTIONS = os.getenv('DJANGO_X_FRAME_OPTIONS', 'DENY')
 

@@ -2132,7 +2132,8 @@ export function AdminBranchAttendance() {
   )
 
   if (view_mode === 'branch_staff') {
-    const displayStaff = loadingStaff ? data.attendance_data || [] : staffData
+    const baseStaff = data.attendance_data || []
+    const displayStaff = loadingStaff || (staffData.length === 0 && baseStaff.length > 0) ? baseStaff : staffData
 
     return (
       <div className="admin-root admin-fade">
@@ -2188,7 +2189,7 @@ export function AdminBranchAttendance() {
               </div>
             ))
           )}
-          {!loadingStaff && displayStaff.length === 0 && <AdminEmpty msg="No active staff found" icon="fa-user-slash" />}
+          {!loadingStaff && baseStaff.length === 0 && displayStaff.length === 0 && <AdminEmpty msg="No active staff found" icon="fa-user-slash" />}
         </div>
       </div>
     )
@@ -2285,7 +2286,7 @@ function StaffDetailsView({ staff, students, data, onBack, targetStudentId, targ
         const uniqueStudentIdsForBatch = new Set() // Track unique students across all batches
 
         for (const batch of filteredBatches) {
-          const studentsRes = await api.get(`/students/?assigned_batch=${batch.id}`)
+          const studentsRes = await api.get(`/batches/${batch.id}/students/`)
           const batchStudentsRaw = studentsRes.data.results || studentsRes.data || []
 
           // IMPORTANT: Only include students whose assigned_batch matches this batch ID
@@ -2293,14 +2294,12 @@ function StaffDetailsView({ staff, students, data, onBack, targetStudentId, targ
           const uniqueBatchStudentsMap = new Map()
           batchStudentsRaw.forEach(student => {
             // Check if student is actually assigned to this batch and belongs to correct branch
-            if (student.assigned_batch === batch.id &&
+            if (Number(student.assigned_batch) === Number(batch.id) &&
               student.branch?.toLowerCase() === staff.branch?.toLowerCase() &&
               !uniqueBatchStudentsMap.has(student.id)) {
-              const enrichedStudent = studentMap.get(student.id)
-              if (enrichedStudent) {
-                uniqueBatchStudentsMap.set(student.id, enrichedStudent)
-                uniqueStudentIdsForBatch.add(student.id)
-              }
+              const enrichedStudent = { ...(studentMap.get(student.id) || {}), ...student }
+              uniqueBatchStudentsMap.set(student.id, enrichedStudent)
+              uniqueStudentIdsForBatch.add(student.id)
             }
           })
 
@@ -2380,7 +2379,7 @@ function StaffDetailsView({ staff, students, data, onBack, targetStudentId, targ
     setModalOpen(true)
   }
 
-  if (loading && batches.length === 0 && !targetStudentId) {
+  if (loading && batches.length === 0) {
     return <AdminSpin />
   }
 
@@ -2521,7 +2520,11 @@ function StaffDetailsView({ staff, students, data, onBack, targetStudentId, targ
 
           {/* Students Grid */}
           <div className="admin-row-grid-2">
-            {batchStudents[selectedBatch.id]?.length === 0 ? (
+            {loading && !batchStudents[selectedBatch.id] ? (
+              <div className="admin-card" style={{ padding: 40, textAlign: 'center', gridColumn: '1/-1' }}>
+                <AdminSpin />
+              </div>
+            ) : (batchStudents[selectedBatch.id] || []).length === 0 ? (
               <div className="admin-card" style={{ padding: 40, textAlign: 'center', gridColumn: '1/-1' }}>
                 <AdminEmpty msg={`No students in ${selectedBatch.branch} branch for this batch`} icon="fa-user-slash" />
               </div>
@@ -5359,7 +5362,7 @@ export function AdminFeeManagement() {
     setFilteredFees(f)
   }
 
-  useEffect(() => { applyFilters(fees, search, branchFilter, statusFilter) }, [search, branchFilter, statusFilter])
+  useEffect(() => { applyFilters(fees, search, branchFilter, statusFilter) }, [fees, search, branchFilter, statusFilter])
 
   const branches = [...new Set(fees.map(f => f.branch).filter(Boolean))]
   const totalFee = fees.reduce((s, f) => s + (parseFloat(f.total_fee) || 0), 0)

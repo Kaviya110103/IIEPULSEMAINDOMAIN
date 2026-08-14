@@ -25,6 +25,9 @@ urlpatterns = [
 
     # â”€â”€ AUTH â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     path('api/auth/login/', v.LoginView.as_view()),
+    path('api/auth/otp/send/', v.StudentOtpSendView.as_view()),
+    path('api/auth/otp/resend/', v.StudentOtpResendView.as_view()),
+    path('api/auth/otp/verify/', v.StudentOtpVerifyView.as_view()),
     path('api/auth/logout/', v.LogoutView.as_view()),
     path('api/auth/refresh/', TokenRefreshView.as_view()),
 
