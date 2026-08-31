@@ -31,7 +31,7 @@ import {
   StaffAnnouncements, TrainerAnnouncements, BranchAnnouncements, StaffDoubts as EmployeeDoubts, ViewStudents,
   StaffStudentLeaveRequests, StaffOwnLeaveHistory,
   CreateTest, ViewTests, TestResults, AddQuestions,
-  UploadQuiz, ManageQuizzes, StaffQuizResults, MentorStudentMonitoring
+  UploadQuiz, ManageQuizzes, StaffQuizResults, MentorStudentMonitoring, ReassignedStudents
 } from './pages/employee/EmployeePages'
 
 // ── Counselor ──────────────────────────────────────────────────────────────
@@ -43,7 +43,7 @@ import {
 
 // ── Student ────────────────────────────────────────────────────────────────
 import {
-  StudentDashboard, StudentAnnouncements, StudentAttendance, StudentSessions, StudentNotifications,
+  StudentDashboard, StudentAnnouncements, StudentAttendance, StudentBatches, StudentSessions, StudentNotifications,
   StudentQuizList, StudentTests, StudentLeave, StudentMaterials, StudentSupport, StudentFeeDetails,
 } from './pages/student/StudentPages'
 
@@ -236,6 +236,7 @@ function AppRoutes() {
       <Route path="/employee" element={<ProtectedRoute allowedRoles={['employee']}><AppLayout role="employee" /></ProtectedRoute>}>
         <Route index element={<EmployeeDashboard />} />
         <Route path="students" element={<ViewStudents />} />
+        <Route path="reassigned-students" element={<ReassignedStudents />} />
         <Route path="attendance" element={<MarkAttendance />} />
         <Route path="attendance-history" element={<AttendanceHistoryPage />} />
         <Route path="batches" element={<ViewBatches />} />
@@ -304,6 +305,7 @@ function AppRoutes() {
         <Route path="announcements" element={<StudentAnnouncements />} />
         <Route path="branch-announcements" element={<BranchAnnouncements />} />
         <Route path="attendance" element={<StudentAttendance />} />
+        <Route path="batches" element={<StudentBatches />} />
         <Route path="sessions" element={<StudentSessions />} />
 
         {/* Test Routes - Fixed: Different paths for different features */}

@@ -18,9 +18,9 @@ def env_list(key, default=None, sep=','):
         return [item.strip() for item in value.split(sep) if item.strip()]
     return default or []
 
-LOCAL_DOMAIN = os.getenv('LOCAL_DOMAIN', 'iiepulse.indrainstitute.com').strip()
-LOCAL_LAN_DOMAIN = os.getenv('LOCAL_LAN_DOMAIN', 'iiepulse.indrainstitute.com').strip()
-DEPLOYMENT_DOMAIN = os.getenv('DEPLOYMENT_DOMAIN', 'iiepulse.indrainstitute.com').strip()
+LOCAL_DOMAIN = os.getenv('LOCAL_DOMAIN', '127.0.0.1:8000').strip()
+LOCAL_LAN_DOMAIN = os.getenv('LOCAL_LAN_DOMAIN', '127.0.0.1:8000').strip()
+DEPLOYMENT_DOMAIN = os.getenv('DEPLOYMENT_DOMAIN', '127.0.0.1:8000').strip()
 DEPLOYMENT_SCHEME = os.getenv(
     'DEPLOYMENT_SCHEME',
     'http' if DEPLOYMENT_DOMAIN.startswith(('localhost', '127.0.0.1', '192.168.')) else 'https',
@@ -177,7 +177,8 @@ CORS_ALLOWED_ORIGINS = env_list(
     'CORS_ALLOWED_ORIGINS',
     CSRF_TRUSTED_ORIGINS,
 )
-
+CORS_ALLOW_ALL_ORIGINS = getenv_bool('CORS_ALLOW_ALL_ORIGINS', DEBUG)
+CORS_ORIGIN_ALLOW_ALL = CORS_ALLOW_ALL_ORIGINS
 CORS_ALLOW_CREDENTIALS = True
 SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
 SECURE_SSL_REDIRECT = getenv_bool('DJANGO_SECURE_SSL_REDIRECT', not DEBUG and not DEPLOYMENT_IS_LOCAL)

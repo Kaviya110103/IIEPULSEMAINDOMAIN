@@ -6,7 +6,7 @@ import { useCallback, useState } from "react";
 import { Image, Pressable, StyleSheet, View } from "react-native";
 import api from "@/services/api";
 
-const appLogo = require("../../assets/images/logo-light.png");
+const appLogo = require("../../assets/images/icon.png");
 
 export default function DashboardLanding() {
   const router = useRouter();

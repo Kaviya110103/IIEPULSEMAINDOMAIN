@@ -680,10 +680,22 @@ export function StudentAnnouncements() {
 export function StudentAttendance() {
   const [records, setRecords] = useState([])
   const [loading, setLoading] = useState(true)
+  const params = new URLSearchParams(window.location.search)
+  const batchId = params.get('batch_id')
+  const courseId = params.get('course_id')
+  const batchNumber = params.get('batch_number')
+  const courseName = params.get('course_name')
 
   useEffect(() => {
-    api.get('/attendance/?student=me').then(r => setRecords(r.data.results || r.data)).finally(() => setLoading(false))
-  }, [])
+    setLoading(true)
+    const query = new URLSearchParams({ student: 'me' })
+    if (courseId) query.set('course_id', courseId)
+    else if (batchId) query.set('batch', batchId)
+    api.get(`/attendance/?${query.toString()}`)
+      .then(r => setRecords(r.data.results || r.data))
+      .catch(() => setRecords([]))
+      .finally(() => setLoading(false))
+  }, [batchId, courseId])
 
   const present = records.filter(r => r.status === 'Present').length
   const pct = records.length ? Math.round(present / records.length * 100) : 0
@@ -697,7 +709,10 @@ export function StudentAttendance() {
   return (
     <div className="student-root">
       <StudentStyles />
-      <StudentPageHeader title="📋 My Attendance" sub="Track your attendance records" />
+      <StudentPageHeader
+        title="My Attendance"
+        sub={courseName || batchNumber ? `${courseName || 'Course'}${batchNumber ? ` - ${batchNumber}` : ''}` : 'Track your attendance records'}
+      />
       <div className="student-stat-grid">
         {stats.map((stat, idx) => (
           <div key={idx} className="student-stat-card">
@@ -718,12 +733,14 @@ export function StudentAttendance() {
         ) : (
           <div style={{ overflowX: 'auto' }}>
             <table className="student-table">
-              <thead><tr><th>Date</th><th>Batch</th><th>Status</th></tr></thead>
+              <thead><tr><th>Date</th><th>Batch</th><th>Trainer</th><th>Session / Module</th><th>Status</th></tr></thead>
               <tbody>
                 {records.map(r => (
                   <tr key={r.id}>
                     <td>{r.date}</td>
                     <td>{r.batch_number}</td>
+                    <td>{r.marked_by || '-'}</td>
+                    <td>{r.session_number ? `Session ${r.session_number}: ${r.session_title || ''}` : '-'}</td>
                     <td><StudentBadge text={r.status} variant={r.status === 'Present' ? 'success' : 'danger'} /></td>
                   </tr>
                 ))}
@@ -737,6 +754,95 @@ export function StudentAttendance() {
 }
 
 // ── STUDENT SESSIONS ──────────────────────────────────────────────────────
+export function StudentBatches() {
+  const navigate = useNavigate()
+  const [batches, setBatches] = useState([])
+  const [loading, setLoading] = useState(true)
+
+  useEffect(() => {
+    setLoading(true)
+    api.get('/student/batches/')
+      .then(r => setBatches(r.data.results || r.data || []))
+      .catch(() => setBatches([]))
+      .finally(() => setLoading(false))
+  }, [])
+
+  if (loading) return <div className="student-root"><StudentStyles /><StudentSpin /></div>
+
+  const attendanceUrl = (batch) => {
+    const query = new URLSearchParams()
+    if (batch.id) query.set('batch_id', batch.id)
+    if (batch.course_id) query.set('course_id', batch.course_id)
+    if (batch.batch_number) query.set('batch_number', batch.batch_number)
+    if (batch.course_name_display || batch.course_name) query.set('course_name', batch.course_name_display || batch.course_name)
+    return `/student/attendance?${query.toString()}`
+  }
+
+  return (
+    <div className="student-root">
+      <StudentStyles />
+      <StudentPageHeader title="My Batches" sub="All courses and batches assigned to you" />
+      {batches.length === 0 ? (
+        <div className="student-card"><StudentEmpty msg="No batches assigned yet" icon="fa-layer-group" /></div>
+      ) : (
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: 18 }}>
+          {batches.map(batch => (
+            <div key={batch.id} className="student-card" style={{ marginBottom: 0 }}>
+              <div style={{ padding: 20 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 14 }}>
+                  <div className="student-stat-icon" style={{ background: '#e8f8f0', color: T.sage }}>
+                    <i className="fas fa-layer-group" />
+                  </div>
+                  <div>
+                    <h4 style={{ margin: 0, fontSize: 20 }}>{batch.course_name_display || batch.course_name || 'Course'}</h4>
+                    <div style={{ color: T.slate, fontSize: 13 }}>{batch.batch_number}</div>
+                  </div>
+                </div>
+                <div style={{ display: 'grid', gap: 8, fontSize: 14, marginBottom: 16 }}>
+                  <div>
+                    <strong>Trainer(s):</strong> {(batch.trainer_names || []).join(', ') || batch.faculty_name || 'N/A'}{' '}
+                    <StudentBadge
+                      text={batch.trainer_status || 'Current Trainer'}
+                      variant={batch.is_previous_assignment ? 'warning' : 'success'}
+                    />
+                  </div>
+                  <div><strong>Batch:</strong> {batch.batch_number || 'N/A'}</div>
+                  <div><strong>Timing:</strong> {batch.batch_timing || 'N/A'}</div>
+                  <div><strong>Duration:</strong> {batch.start_date || 'N/A'} to {batch.end_date || 'N/A'}</div>
+                  <div><strong>Logsheet:</strong> {batch.total_sessions || 0} sessions, {batch.completed_sessions || 0} completed ({batch.progress_percentage || 0}%)</div>
+                  <div>
+                    <strong>Status:</strong>{' '}
+                    <StudentBadge
+                      text={batch.assignment_status || batch.status || 'Active'}
+                      variant={batch.is_previous_assignment ? 'warning' : 'success'}
+                    />
+                  </div>
+                </div>
+                <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+                  <button
+                    type="button"
+                    className="student-btn student-btn-primary"
+                    onClick={() => navigate(`/student/sessions?batch_id=${batch.id}`)}
+                  >
+                    <i className="fas fa-book-open" /> View Sessions
+                  </button>
+                  <button
+                    type="button"
+                    className="student-btn student-btn-success"
+                    onClick={() => navigate(attendanceUrl(batch))}
+                  >
+                    <i className="fas fa-calendar-check" /> View Attendance
+                  </button>
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
 export function StudentSessions() {
   const [sessions, setSessions] = useState([])
   const [loading, setLoading] = useState(true)
@@ -744,15 +850,19 @@ export function StudentSessions() {
   const [doubtText, setDoubtText] = useState('')
   const [submitting, setSubmitting] = useState(false)
   const [actionLoading, setActionLoading] = useState(null)
+  const params = new URLSearchParams(window.location.search)
+  const batchId = params.get('batch_id')
+  const courseId = params.get('course_id')
 
   const load = () => {
     setLoading(true)
-    api.get('/sessions/student/')
+    const query = batchId ? `?batch_id=${batchId}` : courseId ? `?course_id=${courseId}` : ''
+    api.get(`/sessions/student/${query}`)
       .then(r => setSessions(r.data.results || r.data || []))
       .finally(() => setLoading(false))
   }
 
-  useEffect(() => { load() }, [])
+  useEffect(() => { load() }, [batchId, courseId])
 
   const handleMarkComplete = async (session) => {
     if (!window.confirm(`Mark Session ${session.session_number}: "${session.title}" as completed?`)) return

@@ -218,6 +218,7 @@ function EmployeeNav() {
       <SectionLabel label="My Activities" />
       <NavGroup icon="fa-user-graduate" label="My Students">
         <SubLink to="/employee/students" label="View Students" />
+        <SubLink to="/employee/reassigned-students" label="Reassigned Students" />
         <SubLink to="/employee/attendance" label="Attendance" />
       </NavGroup>
       <NavGroup icon="fa-users" label="My Batches">
@@ -267,6 +268,7 @@ function StudentNav() {
       <SectionLabel label="My Learning" />
       <NavItem to="/student/announcements" icon="fa-bullhorn" label="Announcements" />
       <NavItem to="/student/attendance" icon="fa-user-check" label="Attendance" />
+      <NavItem to="/student/batches" icon="fa-layer-group" label="My Batches" />
       <NavItem to="/student/sessions" icon="fa-book-open" label="My Sessions" />
       <NavGroup icon="fa-flask" label="Tests & Quizzes">
         <SubLink to="/student/tests" label="Upcoming Tests" />

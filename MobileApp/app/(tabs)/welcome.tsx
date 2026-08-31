@@ -178,7 +178,7 @@ const instagramUrl = "https://www.instagram.com/iie_indra_institute?igsh=MXB1OW0
 const websiteUrl = "https://indrainstitute.com/";
 const facebookUrl = "https://www.facebook.com/share/1B52k1NCH7/";
 const googleFormUrl = "https://forms.gle/nKXHiEnnZHZeegig7";
-const appLogoLight = require("../../assets/images/logo-light.png");
+const appLogoLight = require("../../assets/images/icon.png");
 const heroStudentsImage = require("../../assets/images/hero-students.png");
 
 const contactLocations = [

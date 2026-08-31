@@ -18,7 +18,12 @@ export const getApiErrorMessage = (err, fallback = 'Request failed') => {
   const data = err?.response?.data
 
   if (!data) return err?.message || fallback
-  if (typeof data === 'string') return data || fallback
+  if (typeof data === 'string') {
+    if (/<\/?[a-z][\s\S]*>/i.test(data) || data.includes('<!DOCTYPE')) {
+      return 'API returned HTML. Please restart the frontend/backend servers and confirm the API URL points to Django.'
+    }
+    return data || fallback
+  }
   if (data.error || data.detail) return data.error || data.detail
 
   const firstValue = Object.values(data)[0]

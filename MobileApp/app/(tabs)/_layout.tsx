@@ -13,7 +13,7 @@ const INACTIVITY_LIMIT = 5 * 60 * 1000;
 const STUDENT_FEEDBACK_FORM_URL = "https://docs.google.com/forms/d/e/1FAIpQLScO29CvpRNB0057OxNROPr0IVPH6dAZZpueHFRRespT0g1E_A/viewform";
 const STUDENT_FEEDBACK_INTERVAL_MS = 20 * 24 * 60 * 60 * 1000;
 const STUDENT_FEEDBACK_LAST_PROMPT_KEY = "iie_student_feedback_last_prompt_at";
-const appLogo = require("../../assets/images/logo-light.png");
+const appLogo = require("../../assets/images/icon.png");
 
 const drawerItems: Array<{
   key: string;

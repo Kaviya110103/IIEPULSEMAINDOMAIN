@@ -122,6 +122,9 @@ urlpatterns = [
     path('api/staff-leave/', v.StaffLeaveListView.as_view()),
     path('api/staff-leave/<int:pk>/process/', v.process_staff_leave),
     path('api/staff/request-completion/<int:student_id>/', v.request_completion),
+    path('api/staff/reassigned-students/', v.trainer_reassigned_students),
+    path('api/staff/reassigned-students/<int:record_id>/report/', v.trainer_reassigned_student_report),
+    path('api/staff/reassigned-students/<int:record_id>/report/pdf/', v.trainer_reassigned_student_report_pdf),
     path('api/staff/student-leave/', v.staff_student_leave_requests),
     path('api/staff/student-leave/<int:pk>/process/', v.staff_process_student_leave),
     path('api/student-leave/', v.StudentLeaveListView.as_view()),
@@ -195,6 +198,7 @@ urlpatterns = [
 
     # â”€â”€ SESSIONS â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     path('api/sessions/student/', v.student_sessions),
+    path('api/student/batches/', v.student_batches),
     path('api/sessions/raise-doubt/', v.student_raise_doubt),
     path('api/sessions/staff-doubts/', v.get_staff_doubts_detail),
     path('api/sessions/<int:session_id>/staff-complete/', v.staff_mark_session_complete),

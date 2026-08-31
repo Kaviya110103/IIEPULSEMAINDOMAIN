@@ -2,7 +2,7 @@ from django.contrib.auth.models import User
 from rest_framework import serializers
 import re
 from .models import (
-    Courses, Employee, Batches, Students,
+    Courses, Employee, Batches, Students, BatchTrainerAssignment, StudentCourseEnrollment, StudentBatchEnrollment,
     StudentAttendance, StudyMaterial, StudyMaterialAssignment, QuizTest, Question, AssignedTest,
     StaffLeaveRequest, StudentLeaveApplication, SupportRequest, StudentSupportRequest,
     CourseSession, SessionCompletion, DailySessionCompletion,
@@ -12,6 +12,7 @@ from .models import (
     CompletedStudent, SessionCompletionRequest, TrainerSessionReport, TestResult,
     GalleryItem, VlogItem, NewsItem, CalendarEvent, Referral, CounselorAnnouncement
 )
+from .student_counts import active_students_for_batch
 
 
 def strip_unsupported_mysql_chars(value):
@@ -139,6 +140,9 @@ from .models import Batches, Courses
 class BatchSerializer(serializers.ModelSerializer):
     course_name_display = serializers.SerializerMethodField()
     faculty_name = serializers.SerializerMethodField()
+    trainer_ids = serializers.SerializerMethodField()
+    trainer_names = serializers.SerializerMethodField()
+    trainers = serializers.SerializerMethodField()
     student_count = serializers.SerializerMethodField()
     course_fee = serializers.SerializerMethodField()   # ← ADD THIS
     course_logsheet_url = serializers.SerializerMethodField()
@@ -169,12 +173,57 @@ class BatchSerializer(serializers.ModelSerializer):
         return '—'
 
     def get_faculty_name(self, obj):
+        names = self.get_trainer_names(obj)
+        if names:
+            return ', '.join(names)
         if obj.faculty:
             return f"{obj.faculty.first_name} {obj.faculty.last_name or ''}".strip()
         return '—'
 
+    def _trainer_assignments(self, obj):
+        try:
+            return list(obj.trainer_assignments.select_related('trainer').order_by('-is_primary', 'trainer__first_name'))
+        except Exception:
+            return []
+
+    def get_trainer_ids(self, obj):
+        ids = [assignment.trainer_id for assignment in self._trainer_assignments(obj)]
+        if not ids and obj.faculty_id:
+            ids = [obj.faculty_id]
+        return ids
+
+    def get_trainer_names(self, obj):
+        names = []
+        for assignment in self._trainer_assignments(obj):
+            trainer = assignment.trainer
+            names.append(f"{trainer.first_name} {trainer.last_name or ''}".strip())
+        if not names and obj.faculty:
+            names.append(f"{obj.faculty.first_name} {obj.faculty.last_name or ''}".strip())
+        return names
+
+    def get_trainers(self, obj):
+        trainers = []
+        for assignment in self._trainer_assignments(obj):
+            trainer = assignment.trainer
+            trainers.append({
+                'id': trainer.id,
+                'name': f"{trainer.first_name} {trainer.last_name or ''}".strip(),
+                'designation': trainer.designation,
+                'branch': trainer.branch,
+                'is_primary': assignment.is_primary,
+            })
+        if not trainers and obj.faculty:
+            trainers.append({
+                'id': obj.faculty.id,
+                'name': f"{obj.faculty.first_name} {obj.faculty.last_name or ''}".strip(),
+                'designation': obj.faculty.designation,
+                'branch': obj.faculty.branch,
+                'is_primary': True,
+            })
+        return trainers
+
     def get_student_count(self, obj):
-        return Students.objects.filter(assigned_batch=obj).count()
+        return active_students_for_batch(obj).count()
 
     def get_course_fee(self, obj):   # ← ADD THIS
         try:
@@ -202,6 +251,10 @@ class BatchSerializer(serializers.ModelSerializer):
 class StudentSerializer(serializers.ModelSerializer):
     assigned_staff_name = serializers.SerializerMethodField()
     assigned_batch_number = serializers.CharField(source='assigned_batch.batch_number', read_only=True)
+    assigned_batches = serializers.SerializerMethodField()
+    enrolled_courses = serializers.SerializerMethodField()
+    course_ids = serializers.SerializerMethodField()
+    course_names = serializers.SerializerMethodField()
 
     class Meta:
         model = Students
@@ -212,11 +265,55 @@ class StudentSerializer(serializers.ModelSerializer):
             return f"{obj.assigned_staff.first_name} {obj.assigned_staff.last_name or ''}"
         return None
 
+    def _active_course_enrollments(self, obj):
+        return obj.course_enrollments.filter(is_active=True).select_related('course').order_by('course__course_name')
+
+    def get_enrolled_courses(self, obj):
+        enrollments = []
+        for enrollment in self._active_course_enrollments(obj):
+            course = enrollment.course
+            batches = []
+            for batch_enrollment in enrollment.batch_assignments.filter(is_active=True).select_related('batch', 'batch__course_name'):
+                batches.append(BatchSerializer(batch_enrollment.batch, context=self.context).data)
+            enrollments.append({
+                'enrollment_id': enrollment.id,
+                'course_id': course.id,
+                'course_name': course.course_name,
+                'course_type': course.course_type,
+                'duration': course.duration,
+                'fee': course.fee,
+                'batches': batches,
+            })
+        return enrollments
+
+    def get_course_ids(self, obj):
+        return [item['course_id'] for item in self.get_enrolled_courses(obj)]
+
+    def get_course_names(self, obj):
+        names = [item['course_name'] for item in self.get_enrolled_courses(obj)]
+        if not names and obj.course:
+            names = [part.strip() for part in str(obj.course).split(',') if part.strip()]
+        return names
+
+    def get_assigned_batches(self, obj):
+        batches = []
+        seen = set()
+        enrollments = obj.batch_enrollments.filter(is_active=True).select_related('batch', 'batch__course_name').order_by('-assigned_at')
+        for enrollment in enrollments:
+            batch = enrollment.batch
+            seen.add(batch.id)
+            batches.append(BatchSerializer(batch, context=self.context).data)
+        if obj.assigned_batch and obj.assigned_batch_id not in seen:
+            batches.append(BatchSerializer(obj.assigned_batch, context=self.context).data)
+        return batches
+
 class AttendanceSerializer(serializers.ModelSerializer):
     batch_number = serializers.SerializerMethodField()
     marked_by = serializers.SerializerMethodField()
     student_name = serializers.SerializerMethodField()
     student_id_display = serializers.SerializerMethodField()
+    session_number = serializers.SerializerMethodField()
+    session_title = serializers.SerializerMethodField()
 
     class Meta:
         model = StudentAttendance
@@ -237,6 +334,12 @@ class AttendanceSerializer(serializers.ModelSerializer):
 
     def get_student_id_display(self, obj):
         return obj.student.student_id if obj.student else '—'
+
+    def get_session_number(self, obj):
+        return obj.session.session_number if obj.session else None
+
+    def get_session_title(self, obj):
+        return obj.session.title if obj.session else ''
 
 class StudyMaterialSerializer(serializers.ModelSerializer):
     uploaded_by_name = serializers.SerializerMethodField()
@@ -372,9 +475,16 @@ class StudentSupportRequestSerializer(serializers.ModelSerializer):
 
 
 class CourseSessionSerializer(serializers.ModelSerializer):
+    completed_by_name = serializers.SerializerMethodField()
+
     class Meta:
         model = CourseSession
         fields = '__all__'
+
+    def get_completed_by_name(self, obj):
+        if obj.completed_by:
+            return f"{obj.completed_by.first_name} {obj.completed_by.last_name or ''}".strip()
+        return None
 
 
 class AnnouncementSerializer(serializers.ModelSerializer):
@@ -454,9 +564,18 @@ class QuizAnswerSerializer(serializers.ModelSerializer):
 
 
 class CompletedStudentSerializer(serializers.ModelSerializer):
+    original_student_db_id = serializers.SerializerMethodField()
+
     class Meta:
         model = CompletedStudent
         fields = '__all__'
+
+    def get_original_student_db_id(self, obj):
+        original_id = str(obj.original_student_id or '').strip()
+        if original_id.isdigit():
+            return int(original_id)
+        student = Students.objects.filter(student_id=original_id).only('id').first()
+        return student.id if student else None
 
 
 class SessionCompletionRequestSerializer(serializers.ModelSerializer):

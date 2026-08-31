@@ -624,10 +624,10 @@ export function CounselorStudents() {
   useEffect(() => {
     if (counselorBranch) {
       loadStaff()
-    } else {
+    } else if (user) {
       setLoading(false)
     }
-  }, [counselorBranch, location.search])
+  }, [counselorBranch, user, location.search])
 
   const formatDate = (dateStr) => {
     if (!dateStr) return '—'
@@ -2303,10 +2303,10 @@ export function CounselorAssignedStudents() {
   useEffect(() => {
     if (counselorBranch) {
       loadStudents()
-    } else {
+    } else if (user) {
       setLoading(false)
     }
-  }, [counselorBranch])
+  }, [counselorBranch, user])
 
   const loadStudents = async () => {
     setLoading(true)
@@ -2403,6 +2403,10 @@ export function CounselorAssignedStudents() {
   }
 
   const fmt = (n) => `₹${Number(n || 0).toLocaleString('en-IN')}`
+
+  if (loading && !counselorBranch) {
+    return <div className="counselor-root"><Styles /><Spin /></div>
+  }
 
   if (!counselorBranch) {
     return (

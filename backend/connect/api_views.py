@@ -22,6 +22,18 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework_simplejwt.tokens import RefreshToken
 from connect.permissions import is_admin_user, is_staff_employee
+from connect.student_counts import (
+    active_students_for_batch,
+    active_students_for_branch,
+    active_students_for_staff,
+    active_students_queryset,
+    assigned_students_for_branch,
+    branch_values as count_branch_values,
+    canonical_branch_count_rows,
+    completed_students_for_branch,
+    completed_students_for_staff,
+    completed_students_queryset,
+)
 # Add this import at the top with your other imports
 from django.contrib.auth.decorators import login_required
 from datetime import datetime, timedelta
@@ -115,14 +127,14 @@ def send_email_async(subject, message, recipient_list):
 
 
 from .models import (
-    Courses, Employee, Batches, Students,
+    Courses, Employee, Batches, Students, BatchTrainerAssignment, StudentCourseEnrollment, StudentBatchEnrollment,
     StudentAttendance, StudyMaterial, StudyMaterialAssignment, QuizTest, Question, AssignedTest, UserActivity,
     StudentLoginRatingEvent,
     StaffLeaveRequest, StudentLeaveApplication, SupportRequest, StudentSupportRequest,
     CourseSession, DailySessionCompletion, StudentSessionStatus, Student_Session_Progress, DoubtResponse, SessionNotification,
     Announcement, CounselorAnnouncement, CounselorLeaveRequest, CounselorSupportRequest,
     Quiz, QuizQuestion, QuizAttempt, QuizAnswer,
-    CompletedStudent, SessionCompletionRequest, TestResult,FeePaymentRequest,
+    CompletedStudent, ReassignedStudentRecord, SessionCompletionRequest, TestResult,FeePaymentRequest,
     GalleryItem, VlogItem, NewsItem, CalendarEvent, Referral,
     PublicUser, PublicUserActivity, PublicPracticeResult,
 )
@@ -494,35 +506,11 @@ def prepare_activity_monitoring_queryset(qs):
 
 
 def get_active_students_queryset():
-    qs = Students.objects.all()
     try:
-        full_completed_ids = CompletedStudent.objects.filter(
-            completion_type='full'
-        ).values_list('original_student_id', flat=True)
+        return active_students_queryset()
     except DatabaseError:
         logger.exception("Database error while querying fully completed students")
-        full_completed_ids = []
-
-    student_id_values = []
-    student_pk_values = []
-    for completed_id in full_completed_ids:
-        if not completed_id:
-            continue
-        completed_id = str(completed_id).strip()
-        student_id_values.append(completed_id)
-        if completed_id.isdigit():
-            student_pk_values.append(int(completed_id))
-
-    if not student_id_values and not student_pk_values:
-        return qs
-
-    exclude_filter = Q()
-    if student_id_values:
-        exclude_filter |= Q(student_id__in=student_id_values)
-    if student_pk_values:
-        exclude_filter |= Q(id__in=student_pk_values)
-
-    return qs.exclude(exclude_filter)
+        return Students.objects.none()
 
 
 def apply_activity_date_filters(qs, params):
@@ -1068,13 +1056,7 @@ class AdminDashboardView(APIView):
         if not is_admin_user(request.user):
             return Response({'error': 'Admin access required.'}, status=403)
         active_students = get_active_students_queryset()
-        branch_counts = active_students.exclude(
-            branch__isnull=True
-        ).exclude(
-            branch=''
-        ).values('branch').annotate(
-            count=Count('id')
-        ).order_by('branch')
+        branch_counts = canonical_branch_count_rows(active_students)
         batch_branch_counts = Batches.objects.exclude(
             branch__isnull=True
         ).exclude(
@@ -1097,19 +1079,8 @@ class AdminDashboardView(APIView):
                 return ['kuniyamuthur', 'Kuniyamuthur', 'KUNIYAMUTHUR', 'kunniyamuthur', 'Kunniyamuthur', 'KUNNIYAMUTHUR']
             return [branch]
 
-        completed_students_qs = CompletedStudent.objects.filter(completion_type='full')
-        completed_counts_by_branch = {}
-        for item in completed_students_qs.exclude(branch__isnull=True).exclude(branch='').values('branch').annotate(count=Count('id')):
-            key = canonical_branch(item['branch'])
-            if key:
-                completed_counts_by_branch[key] = completed_counts_by_branch.get(key, 0) + item['count']
-        completed_branch_counts = [
-            {'branch': branch, 'count': count}
-            for branch, count in sorted(
-                completed_counts_by_branch.items(),
-                key=lambda item: (['100ft', 'hopes', 'kuniyamuthur'].index(item[0]) if item[0] in ['100ft', 'hopes', 'kuniyamuthur'] else 3, item[0])
-            )
-        ]
+        completed_students_qs = completed_students_queryset()
+        completed_branch_counts = canonical_branch_count_rows(completed_students_qs)
 
         def clamp_percentage(value):
             return max(0, min(100, round(value)))
@@ -1126,7 +1097,7 @@ class AdminDashboardView(APIView):
         branch_tracking_cards = []
         for branch in branches:
             values = branch_values(branch)
-            active_branch_students = active_students.filter(branch__in=values)
+            active_branch_students = active_students_for_branch(branch)
             staff_total = Employee.objects.filter(branch__in=values).count()
             student_total = active_branch_students.count()
             staff_logged = UserActivity.objects.filter(
@@ -1223,8 +1194,10 @@ class EmployeeDashboardView(APIView):
         except Employee.DoesNotExist:
             return Response({'error': 'Employee not found'}, status=404)
 
-        completed_ids = CompletedStudent.objects.values_list('original_student_id', flat=True)
         my_batches = Batches.objects.filter(faculty=employee)
+        my_students = active_students_for_staff(employee)
+        my_completed_students = completed_students_for_staff(employee)
+        reassigned_students_count = ReassignedStudentRecord.objects.filter(previous_trainer=employee).count()
         today = timezone.now().date()
         announcements = Announcement.objects.filter(
             Q(recipient_type='all') | Q(recipient_type='staff') | Q(recipient_type='mentors'),
@@ -1234,14 +1207,11 @@ class EmployeeDashboardView(APIView):
         return Response({
             'employee': EmployeeSerializer(employee).data,
             'my_batches_count': my_batches.count(),
-            'my_students_count': Students.objects.filter(
-                assigned_batch__faculty=employee
-            ).exclude(student_id__in=completed_ids).count(),
+            'my_students_count': my_students.count(),
             'today_classes_count': my_batches.filter(start_date__lte=today, end_date__gte=today).count(),
             'materials_count': StudyMaterial.objects.filter(uploaded_by=employee).count(),
-            'completed_students_count': CompletedStudent.objects.filter(
-                batch_number__in=my_batches.values_list('batch_number', flat=True)
-            ).count(),
+            'completed_students_count': my_completed_students.count(),
+            'reassigned_students_count': reassigned_students_count,
             'announcements_count': announcements.count(),
             'announcements': AnnouncementSerializer(announcements, many=True).data,
         })
@@ -1424,6 +1394,8 @@ class CounselorDashboardView(APIView):
             return Response({'error': 'Not found'}, status=404)
 
         branch = counselor.branch or ''
+        branch_values = count_branch_values(branch)
+        branch_students = active_students_for_branch(branch)
         announcements = Announcement.objects.filter(
             Q(recipient_type='all') | Q(recipient_type='counselors') | Q(recipient_type='staff'),
             is_published=True
@@ -1431,11 +1403,11 @@ class CounselorDashboardView(APIView):
 
         return Response({
             'counselor': EmployeeSerializer(counselor).data,
-            'student_count': Students.objects.filter(branch=branch).count(),
-            'mentor_count': Employee.objects.filter(branch=branch, designation__iexact='mentor').count(),
-            'counselor_count': Employee.objects.filter(branch=branch, designation__iexact='counselor').count(),
-            'course_count': Courses.objects.filter(batches__branch=branch).distinct().count(),
-            'batch_count': Batches.objects.filter(branch=branch).count(),
+            'student_count': branch_students.count(),
+            'mentor_count': Employee.objects.filter(branch__in=branch_values, designation__iexact='mentor').count(),
+            'counselor_count': Employee.objects.filter(branch__in=branch_values, designation__iexact='counselor').count(),
+            'course_count': Courses.objects.filter(batches__branch__in=branch_values).distinct().count(),
+            'batch_count': Batches.objects.filter(branch__in=branch_values).count(),
             'pending_completion_requests': SessionCompletionRequest.objects.filter(counselor=counselor, status='pending').count(),
             'announcements': AnnouncementSerializer(announcements, many=True).data,
             'next_batch_id': generate_batch_number(branch) if branch else '',
@@ -1843,6 +1815,214 @@ class EmployeeProfileView(APIView):
 
 # -- BATCHES ------------------------------------------------------------------
 
+def _request_id_list(data, *keys):
+    values = []
+    for key in keys:
+        if hasattr(data, 'getlist'):
+            values.extend(data.getlist(key))
+        raw = data.get(key)
+        if raw is None:
+            continue
+        if isinstance(raw, (list, tuple, set)):
+            values.extend(raw)
+        else:
+            values.extend(str(raw).split(','))
+    clean = []
+    seen = set()
+    for value in values:
+        value = str(value or '').strip()
+        if value and value.isdigit() and value not in seen:
+            seen.add(value)
+            clean.append(int(value))
+    return clean
+
+
+def _batch_trainer_ids_from_request(data):
+    ids = _request_id_list(data, 'trainer_ids', 'trainers', 'faculty_ids')
+    if not ids:
+        ids = _request_id_list(data, 'faculty')
+    return ids
+
+
+def _student_course_ids_from_request(data):
+    ids = _request_id_list(data, 'course_ids', 'courses')
+    raw_course = data.get('course')
+    if ids or not raw_course:
+        return ids
+    raw_parts = raw_course if isinstance(raw_course, (list, tuple, set)) else str(raw_course).split(',')
+    names = [str(part or '').strip() for part in raw_parts if str(part or '').strip()]
+    if len(names) == 1 and names[0].isdigit():
+        return [int(names[0])]
+    course_ids = []
+    for name in names:
+        course = Courses.objects.filter(course_name__iexact=name).first()
+        if course:
+            course_ids.append(course.id)
+    return course_ids
+
+
+def _sync_student_course_enrollments(student, course_ids, actor=None, allow_empty=False):
+    course_ids = [int(cid) for cid in course_ids if cid]
+    if not course_ids and not allow_empty:
+        raise ValueError('Select at least one course.')
+
+    courses = list(Courses.objects.filter(id__in=course_ids).order_by('course_name'))
+    found_ids = {course.id for course in courses}
+    missing = [str(cid) for cid in course_ids if cid not in found_ids]
+    if missing:
+        raise Courses.DoesNotExist(f"Course not found: {', '.join(missing)}")
+
+    target_ids = set(course_ids)
+    for enrollment in student.course_enrollments.select_related('course').all():
+        if enrollment.course_id in target_ids:
+            if not enrollment.is_active:
+                enrollment.is_active = True
+                enrollment.save(update_fields=['is_active', 'updated_at'])
+        elif enrollment.is_active:
+            has_active_batches = StudentBatchEnrollment.objects.filter(
+                student=student,
+                course_enrollment=enrollment,
+                is_active=True,
+            ).exists()
+            if has_active_batches:
+                raise ValueError(f"Remove active batch assignment before removing {enrollment.course.course_name}.")
+            enrollment.is_active = False
+            enrollment.save(update_fields=['is_active', 'updated_at'])
+
+    enrollments = []
+    for course in courses:
+        enrollment, _ = StudentCourseEnrollment.objects.update_or_create(
+            student=student,
+            course=course,
+            defaults={'is_active': True, 'enrolled_by': actor},
+        )
+        enrollments.append(enrollment)
+
+    if courses:
+        student.course = ', '.join(course.course_name for course in courses)
+        student.save(update_fields=['course', 'updated_at'])
+    return enrollments
+
+
+def _active_student_course_enrollment(student, course):
+    enrollment, _ = StudentCourseEnrollment.objects.update_or_create(
+        student=student,
+        course=course,
+        defaults={'is_active': True},
+    )
+    return enrollment
+
+
+def _trainer_user_recipients_for_batch(batch):
+    recipients = []
+    trainers = Employee.objects.filter(
+        Q(id=batch.faculty_id) | Q(batch_trainer_assignments__batch=batch)
+    ).distinct()
+    for trainer in trainers:
+        if trainer.user:
+            recipients.append(trainer.user)
+    return recipients
+
+
+def _sync_batch_trainers(batch, trainer_ids):
+    trainer_ids = [int(tid) for tid in trainer_ids if tid]
+    if not trainer_ids:
+        raise ValueError('Select at least one trainer.')
+    trainers = list(Employee.objects.filter(id__in=trainer_ids))
+    found_ids = {trainer.id for trainer in trainers}
+    missing = [str(tid) for tid in trainer_ids if tid not in found_ids]
+    if missing:
+        raise Employee.DoesNotExist(f"Trainer not found: {', '.join(missing)}")
+
+    primary_id = trainer_ids[0]
+    if batch.faculty_id != primary_id:
+        batch.faculty_id = primary_id
+        batch.save(update_fields=['faculty'])
+
+    BatchTrainerAssignment.objects.filter(batch=batch).exclude(trainer_id__in=trainer_ids).delete()
+    for trainer_id in trainer_ids:
+        BatchTrainerAssignment.objects.update_or_create(
+            batch=batch,
+            trainer_id=trainer_id,
+            defaults={'is_primary': trainer_id == primary_id},
+        )
+    BatchTrainerAssignment.objects.filter(batch=batch).exclude(trainer_id=primary_id).update(is_primary=False)
+
+
+def _add_batch_trainers(batch, trainer_ids):
+    trainer_ids = [int(tid) for tid in trainer_ids if tid]
+    if not trainer_ids:
+        return
+    trainers = list(Employee.objects.filter(id__in=trainer_ids))
+    found_ids = {trainer.id for trainer in trainers}
+    missing = [str(tid) for tid in trainer_ids if tid not in found_ids]
+    if missing:
+        raise Employee.DoesNotExist(f"Trainer not found: {', '.join(missing)}")
+
+    existing_primary = BatchTrainerAssignment.objects.filter(batch=batch, is_primary=True).first()
+    primary_id = existing_primary.trainer_id if existing_primary else (batch.faculty_id or trainer_ids[0])
+    if not batch.faculty_id:
+        batch.faculty_id = primary_id
+        batch.save(update_fields=['faculty'])
+
+    for trainer_id in trainer_ids:
+        BatchTrainerAssignment.objects.update_or_create(
+            batch=batch,
+            trainer_id=trainer_id,
+            defaults={'is_primary': trainer_id == primary_id},
+        )
+
+
+def _student_enrolled_batches(student):
+    batches = []
+    seen = set()
+    for enrollment in student.batch_enrollments.filter(is_active=True).select_related('batch').order_by('-assigned_at'):
+        batches.append(enrollment.batch)
+        seen.add(enrollment.batch_id)
+    if student.assigned_batch and student.assigned_batch_id not in seen:
+        batches.append(student.assigned_batch)
+    return batches
+
+
+def _student_course_batches(student, course_id):
+    batches = []
+    seen = set()
+    enrollments = student.batch_enrollments.filter(
+        is_active=True,
+        batch__course_name_id=course_id,
+    ).select_related('batch', 'batch__course_name').order_by('-assigned_at')
+    for enrollment in enrollments:
+        if enrollment.batch_id not in seen:
+            batches.append(enrollment.batch)
+            seen.add(enrollment.batch_id)
+    if student.assigned_batch and student.assigned_batch.course_name_id == course_id and student.assigned_batch_id not in seen:
+        batches.append(student.assigned_batch)
+    return batches
+
+
+def _student_accessible_batches(student):
+    batches = []
+    seen = set()
+    for batch in _student_enrolled_batches(student):
+        if batch and batch.id not in seen:
+            batches.append(batch)
+            seen.add(batch.id)
+    reassignment_batches = Batches.objects.filter(
+        Q(reassigned_from_records__student=student) |
+        Q(reassigned_to_records__student=student)
+    ).distinct()
+    for batch in reassignment_batches:
+        if batch and batch.id not in seen:
+            batches.append(batch)
+            seen.add(batch.id)
+    return batches
+
+
+def _is_batch_trainer(batch, employee):
+    if not employee:
+        return False
+    return batch.faculty_id == employee.id or BatchTrainerAssignment.objects.filter(batch=batch, trainer=employee).exists()
+
 class BatchListCreateView(generics.ListAPIView):
     queryset = Batches.objects.all().order_by('-created_at')
     serializer_class = BatchSerializer
@@ -1855,7 +2035,7 @@ class BatchListCreateView(generics.ListAPIView):
         # Get faculty filter from query params
         faculty_id = self.request.query_params.get('faculty')
         if faculty_id:
-            qs = qs.filter(faculty__id=faculty_id)
+            qs = qs.filter(Q(faculty__id=faculty_id) | Q(trainer_assignments__trainer_id=faculty_id)).distinct()
         
         # For non-admin users
         if not (user.is_superuser or user.is_staff):
@@ -1866,7 +2046,7 @@ class BatchListCreateView(generics.ListAPIView):
                 elif emp.designation.lower() in ['trainer', 'mentor']:
                     # If faculty filter not provided, filter by the logged-in staff
                     if not faculty_id:
-                        qs = qs.filter(faculty=emp)
+                        qs = qs.filter(Q(faculty=emp) | Q(trainer_assignments__trainer=emp)).distinct()
             except Employee.DoesNotExist:
                 return qs.none()
         
@@ -1882,7 +2062,7 @@ class BatchListCreateView(generics.ListAPIView):
         for batch_data in data:
             try:
                 batch = Batches.objects.get(id=batch_data['id'])
-                student_count = Students.objects.filter(assigned_batch=batch).count()
+                student_count = active_students_for_batch(batch).count()
                 batch_data['student_count'] = student_count
             except Batches.DoesNotExist:
                 batch_data['student_count'] = 0
@@ -1905,7 +2085,8 @@ class BatchCreateView(APIView):
         batch_number = data.get('batch_number', '').strip()
         course_type = data.get('course_type', '').strip()
         course_name_id = data.get('course_name', '').strip()
-        faculty_id = data.get('faculty', '').strip()
+        trainer_ids = _batch_trainer_ids_from_request(data)
+        faculty_id = str(trainer_ids[0]) if trainer_ids else ''
         start_date = data.get('start_date', '').strip()
         batch_timing = data.get('batch_timing', '').strip()
         branch = data.get('branch', '').strip()
@@ -1924,7 +2105,7 @@ class BatchCreateView(APIView):
         if not batch_number: missing.append('Batch Number')
         if not course_type: missing.append('Course Type')
         if not course_name_id: missing.append('Course Name')
-        if not faculty_id: missing.append('Faculty')
+        if not faculty_id: missing.append('Trainer')
         if not start_date: missing.append('Start Date')
         if not batch_timing: missing.append('Batch Timing')
         if not branch: missing.append('Branch')
@@ -1935,11 +2116,13 @@ class BatchCreateView(APIView):
             if branch != employee.branch:
                 return Response({'error': f'You can only create batches for your own branch ({employee.branch})!'}, status=403)
             try:
-                selected_faculty = Employee.objects.get(id=faculty_id)
-                if selected_faculty.branch != employee.branch:
-                    return Response({'error': 'Selected faculty is not from your branch!'}, status=403)
+                selected_trainers = Employee.objects.filter(id__in=trainer_ids)
+                if selected_trainers.count() != len(trainer_ids):
+                    return Response({'error': 'Selected trainer not found!'}, status=404)
+                if selected_trainers.exclude(branch=employee.branch).exists():
+                    return Response({'error': 'Selected trainer is not from your branch!'}, status=403)
             except Employee.DoesNotExist:
-                return Response({'error': 'Selected faculty not found!'}, status=404)
+                return Response({'error': 'Selected trainer not found!'}, status=404)
 
         if Batches.objects.filter(batch_number=batch_number).exists():
             return Response({'error': f"Batch number '{batch_number}' already exists!"}, status=400)
@@ -1970,9 +2153,18 @@ class BatchCreateView(APIView):
         if logsheet_file:
             batch.course_logsheet = logsheet_file
         batch.save()
-        if faculty.user:
+        try:
+            _sync_batch_trainers(batch, trainer_ids)
+        except ValueError as exc:
+            batch.delete()
+            return Response({'error': str(exc)}, status=400)
+        except Employee.DoesNotExist:
+            batch.delete()
+            return Response({'error': 'Selected trainer not found!'}, status=404)
+
+        for recipient in set(_trainer_user_recipients_for_batch(batch)):
             _queue_user_notification(
-                faculty.user,
+                recipient,
                 request.user,
                 'assignment',
                 'New Batch Assigned',
@@ -2015,6 +2207,8 @@ class BatchDetailView(generics.RetrieveUpdateDestroyAPIView):
             except Employee.DoesNotExist:
                 return Response({'error': 'Faculty not found'}, status=404)
 
+        trainer_ids = _batch_trainer_ids_from_request(data)
+
         if data.get('start_date'):
             batch.start_date = data.get('start_date')
 
@@ -2037,6 +2231,14 @@ class BatchDetailView(generics.RetrieveUpdateDestroyAPIView):
             return Response({'error': str(exc)}, status=400)
 
         batch.save()
+
+        if trainer_ids:
+            try:
+                _sync_batch_trainers(batch, trainer_ids)
+            except ValueError as exc:
+                return Response({'error': str(exc)}, status=400)
+            except Employee.DoesNotExist:
+                return Response({'error': 'Trainer not found'}, status=404)
 
         return Response({
             'message': f"Batch '{batch.batch_number}' updated successfully!",
@@ -2107,7 +2309,13 @@ class StudentListView(generics.ListAPIView):
                 if emp.designation.lower() == 'counselor':
                     qs = qs.filter(branch=emp.branch)
                 elif emp.designation.lower() in ['trainer', 'mentor']:
-                    qs = qs.filter(assigned_staff=emp)
+                    qs = qs.filter(
+                        Q(assigned_staff=emp) |
+                        Q(assigned_batch__faculty=emp) |
+                        Q(assigned_batch__trainer_assignments__trainer=emp) |
+                        Q(batch_enrollments__batch__faculty=emp, batch_enrollments__is_active=True) |
+                        Q(batch_enrollments__batch__trainer_assignments__trainer=emp, batch_enrollments__is_active=True)
+                    ).distinct()
             except Employee.DoesNotExist:
                 return qs.none()
 
@@ -2139,7 +2347,7 @@ class StudentCreateView(APIView):
         city = data.get('city', '').strip()
         state = data.get('state', '').strip()
         qualification = data.get('qualification', '').strip()
-        course_name = data.get('course', '').strip()
+        course_ids = _student_course_ids_from_request(data)
         gender = data.get('gender', '').strip()
         branch = data.get('branch', '').strip()
         photo = request.FILES.get('photo')
@@ -2157,8 +2365,17 @@ class StudentCreateView(APIView):
         if not student_id_input and branch:
             student_id_input = generate_student_id(branch)
 
-        if not all([student_id_input, first_name, email, mobile_no, date_of_birth, city, state, qualification, course_name, branch]):
+        if not all([student_id_input, first_name, email, mobile_no, date_of_birth, city, state, qualification, branch]) or not course_ids:
             return Response({'error': 'Please fill in all required fields.'}, status=400)
+
+        try:
+            selected_courses = list(Courses.objects.filter(id__in=course_ids).order_by('course_name'))
+            if len(selected_courses) != len(course_ids):
+                return Response({'error': 'One or more selected courses were not found.'}, status=404)
+        except Courses.DoesNotExist:
+            return Response({'error': 'Selected course not found.'}, status=404)
+
+        course_name = ', '.join(course.course_name for course in selected_courses)
 
         existing_user = User.objects.filter(username=email).first()
         if existing_user:
@@ -2196,6 +2413,7 @@ class StudentCreateView(APIView):
                 branch=branch,
                 photo=photo if photo else None,
             )
+            _sync_student_course_enrollments(student, course_ids, request.user)
 
             # -- Send welcome email with login credentials (async) -------------
             try:
@@ -2265,6 +2483,7 @@ class StudentDetailView(generics.RetrieveUpdateDestroyAPIView):
     def partial_update(self, request, *args, **kwargs):
         student = self.get_object()
         new_email = request.data.get('email', '').strip().lower()
+        course_ids = _student_course_ids_from_request(request.data)
 
         # If email changed, update the Django User too
         if new_email and new_email != student.email:
@@ -2273,6 +2492,14 @@ class StudentDetailView(generics.RetrieveUpdateDestroyAPIView):
             student.user.username = new_email
             student.user.email = new_email
             student.user.save()
+
+        if course_ids:
+            try:
+                _sync_student_course_enrollments(student, course_ids, request.user)
+            except ValueError as exc:
+                return Response({'error': str(exc)}, status=400)
+            except Courses.DoesNotExist:
+                return Response({'error': 'Selected course not found.'}, status=404)
 
         return super().partial_update(request, *args, **kwargs)
 
@@ -2305,90 +2532,119 @@ def assign_staff_to_student(request, student_id):
     try:
         student = Students.objects.get(student_id=student_id)
         staff_id = request.data.get('staff_id')
-        batch_id = request.data.get('batch_id')
+        staff_ids = _request_id_list(request.data, 'staff_ids', 'staff')
+        if staff_id and not staff_ids:
+            staff_ids = _request_id_list(request.data, 'staff_id')
+        batch_ids = _request_id_list(request.data, 'batch_ids', 'batches')
+        single_batch_id = request.data.get('batch_id')
+        if single_batch_id and not batch_ids:
+            batch_ids = _request_id_list(request.data, 'batch_id')
+        course_id = request.data.get('course_id') or request.data.get('course_enrollment_course_id')
+        selected_course = None
+        if course_id:
+            try:
+                selected_course = Courses.objects.get(id=course_id)
+            except Courses.DoesNotExist:
+                return Response({'error': 'Selected course not found'}, status=404)
+        staff_batch_map = request.data.get('staff_batch_map') or {}
+        if not isinstance(staff_batch_map, dict):
+            staff_batch_map = {}
 
-        if staff_id:
-            student.assigned_staff = Employee.objects.get(id=staff_id)
+        if staff_ids:
+            staff_members = list(Employee.objects.filter(id__in=staff_ids))
+            if len(staff_members) != len(staff_ids):
+                return Response({'error': 'One or more selected staff members were not found'}, status=404)
+            student.assigned_staff = staff_members[0]
 
-        if batch_id:
-            batch = Batches.objects.get(id=batch_id)
-            student.assigned_batch = batch
+        assigned_batches = []
+        if batch_ids:
+            previous_batch = student.assigned_batch
+            existing_session_state = _student_session_state_by_number(student, previous_batch)
+            batches = list(Batches.objects.filter(id__in=batch_ids).select_related('course_name', 'faculty'))
+            found_ids = {batch.id for batch in batches}
+            if len(found_ids) != len(batch_ids):
+                return Response({'error': 'One or more selected batches were not found'}, status=404)
 
-            sessions = CourseSession.objects.filter(batch=batch).order_by("session_number")
+            for idx, batch_id in enumerate(batch_ids):
+                batch = next(item for item in batches if item.id == batch_id)
+                if staff_ids:
+                    try:
+                        mapped_staff_ids = [
+                            int(mapped_staff_id)
+                            for mapped_staff_id, mapped_batch_id in staff_batch_map.items()
+                            if str(mapped_batch_id) == str(batch.id) and str(mapped_staff_id).isdigit()
+                        ]
+                        _add_batch_trainers(batch, mapped_staff_ids or staff_ids)
+                    except Employee.DoesNotExist:
+                        return Response({'error': 'Selected trainer not found!'}, status=404)
+                course_enrollment = _active_student_course_enrollment(student, batch.course_name)
+                if not course_enrollment.is_active:
+                    course_enrollment.is_active = True
+                    course_enrollment.save(update_fields=['is_active', 'updated_at'])
+                assigned_batches.append(batch)
+                if idx == 0 and not student.assigned_batch_id:
+                    student.assigned_batch = batch
+                    if not staff_ids:
+                        student.assigned_staff = batch.faculty
 
-            # If this is a new batch and sessions are not created yet, extract from logsheet
-            if not sessions.exists():
-                print(f"?? No sessions found for batch {batch.id}. Trying to extract from logsheet...")
-
-                extracted_sessions = extract_sessions_from_logsheet(batch, debug=True)
-
-                for item in extracted_sessions:
-                    CourseSession.objects.update_or_create(
-                        batch=batch,
-                        session_number=item["session_number"],
-                        defaults={
-                            "title": item.get("title", ""),
-                            "topics": item.get("topics", ""),
-                            "session_enabled": True,
-                        }
-                    )
-
-                sessions = CourseSession.objects.filter(batch=batch).order_by("session_number")
-                print(f"? Sessions available for batch {batch.id}: {sessions.count()}")
-
-            Student_Session_Progress.objects.filter(student=student).delete()
-            StudentSessionStatus.objects.filter(student=student).delete()
-
-            for session in sessions:
-                existing_staff_completed = bool(session.staff_completed) or Student_Session_Progress.objects.filter(
-                    session=session,
-                    staff_completed=True,
-                ).exists()
-                staff_completed_at = (session.completed_date or timezone.now()) if existing_staff_completed else None
-                Student_Session_Progress.objects.create(
-                    student=student,
-                    session=session,
-                    completed=False,
-                    staff_completed=existing_staff_completed,
-                    staff_completed_at=staff_completed_at,
-                    student_status="pending" if existing_staff_completed else "not_started"
-                )
-                StudentSessionStatus.objects.create(
-                    student=student,
-                    session=session,
-                    staff_completed=existing_staff_completed,
-                    staff_completed_at=staff_completed_at,
-                    student_status="pending" if existing_staff_completed else "not_started"
-                )
-
-            # -- Create fee record -----------------------------------------
-            course_fee = batch.course_name.fee if batch.course_name and batch.course_name.fee else 0
-            if course_fee:
-                FeePayment.objects.get_or_create(
+                StudentBatchEnrollment.objects.update_or_create(
                     student=student,
                     batch=batch,
-                    defaults={
-                        'total_fee': course_fee,
-                        'amount_paid': 0,
-                        'balance': course_fee,
-                        'is_fully_paid': False,
-                    }
+                    defaults={'assigned_by': request.user, 'is_active': True, 'course_enrollment': course_enrollment},
                 )
-            # -------------------------------------------------------------
+
+                sessions = CourseSession.objects.filter(batch=batch).order_by("session_number")
+
+                # If this is a new batch and sessions are not created yet, extract from logsheet
+                if not sessions.exists():
+                    print(f"?? No sessions found for batch {batch.id}. Trying to extract from logsheet...")
+
+                    extracted_sessions = extract_sessions_from_logsheet(batch, debug=True)
+
+                    for item in extracted_sessions:
+                        CourseSession.objects.update_or_create(
+                            batch=batch,
+                            session_number=item["session_number"],
+                            defaults={
+                                "title": item.get("title", ""),
+                                "topics": item.get("topics", ""),
+                                "session_enabled": True,
+                            }
+                        )
+
+                    sessions = CourseSession.objects.filter(batch=batch).order_by("session_number")
+                    print(f"? Sessions available for batch {batch.id}: {sessions.count()}")
+
+                _apply_student_session_state_to_batch(student, batch, existing_session_state, reset_existing=True)
+
+                # -- Create fee record -----------------------------------------
+                course_fee = batch.course_name.fee if batch.course_name and batch.course_name.fee else 0
+                if course_fee:
+                    FeePayment.objects.get_or_create(
+                        student=student,
+                        batch=batch,
+                        defaults={
+                            'total_fee': course_fee,
+                            'amount_paid': 0,
+                            'balance': course_fee,
+                            'is_fully_paid': False,
+                        }
+                    )
+                # -------------------------------------------------------------
 
         student.save()
         recipients = []
         if student.assigned_staff and student.assigned_staff.user:
             recipients.append(student.assigned_staff.user)
-        if student.assigned_batch and student.assigned_batch.faculty and student.assigned_batch.faculty.user:
-            recipients.append(student.assigned_batch.faculty.user)
+        for batch in assigned_batches or ([student.assigned_batch] if student.assigned_batch else []):
+            recipients.extend(_trainer_user_recipients_for_batch(batch))
         for recipient in set(recipients):
             _queue_user_notification(
                 recipient,
                 request.user,
                 'assignment',
                 'New Student Assigned',
-                f"New Student Assigned: {student.first_name} {student.last_name or ''} has been assigned to batch {student.assigned_batch.batch_number if student.assigned_batch else 'N/A'}.",
+                f"New Student Assigned: {student.first_name} {student.last_name or ''} has been assigned to batch {', '.join(batch.batch_number for batch in assigned_batches) if assigned_batches else (student.assigned_batch.batch_number if student.assigned_batch else 'N/A')}.",
                 True,
             )
         return Response({'message': 'Assigned successfully.', 'student': StudentSerializer(student).data})
@@ -2404,9 +2660,243 @@ def remove_staff_from_student(request, student_id):
         student.assigned_staff = None
         student.assigned_batch = None
         student.save()
+        StudentBatchEnrollment.objects.filter(student=student).update(is_active=False)
         return Response({'message': 'Assignment removed.'})
     except Students.DoesNotExist:
         return Response({'error': 'Not found'}, status=404)
+
+
+def _session_status_priority(status):
+    order = {'not_started': 0, 'pending': 1, 'doubt': 2, 'completed': 3}
+    return order.get(status or 'not_started', 0)
+
+
+def _merge_session_state(current, *, staff_completed=False, staff_completed_at=None, completed=False,
+                         completed_date=None, student_status=None, student_confirmed_at=None):
+    current['staff_completed'] = current.get('staff_completed') or bool(staff_completed)
+    current['completed'] = current.get('completed') or bool(completed) or student_status == 'completed'
+    current['staff_completed_at'] = current.get('staff_completed_at') or staff_completed_at
+    current['completed_date'] = current.get('completed_date') or completed_date
+    current['student_confirmed_at'] = current.get('student_confirmed_at') or student_confirmed_at
+    if student_status and _session_status_priority(student_status) > _session_status_priority(current.get('student_status')):
+        current['student_status'] = student_status
+    if current['completed']:
+        current['student_status'] = 'completed'
+    elif current['staff_completed'] and current.get('student_status') == 'not_started':
+        current['student_status'] = 'pending'
+    return current
+
+
+def _student_session_state_by_number(student, batch=None):
+    state_by_number = {}
+
+    def state_for(session):
+        return state_by_number.setdefault(session.session_number, {
+            'staff_completed': False,
+            'staff_completed_at': None,
+            'completed': False,
+            'completed_date': None,
+            'student_status': 'not_started',
+            'student_confirmed_at': None,
+        })
+
+    progress_qs = Student_Session_Progress.objects.filter(student=student).select_related('session')
+    status_qs = StudentSessionStatus.objects.filter(student=student).select_related('session')
+    session_qs = CourseSession.objects.all()
+    if batch:
+        progress_qs = progress_qs.filter(session__batch=batch)
+        status_qs = status_qs.filter(session__batch=batch)
+        session_qs = session_qs.filter(batch=batch)
+    else:
+        session_qs = CourseSession.objects.filter(
+            id__in=progress_qs.values_list('session_id', flat=True)
+        ) | CourseSession.objects.filter(
+            id__in=status_qs.values_list('session_id', flat=True)
+        )
+
+    for progress in progress_qs:
+        state = state_for(progress.session)
+        _merge_session_state(
+            state,
+            staff_completed=progress.staff_completed,
+            staff_completed_at=progress.staff_completed_at,
+            completed=progress.completed,
+            completed_date=progress.completed_date,
+            student_status=progress.student_status,
+            student_confirmed_at=progress.student_confirmed_at,
+        )
+
+    for status_obj in status_qs:
+        state = state_for(status_obj.session)
+        _merge_session_state(
+            state,
+            staff_completed=status_obj.staff_completed,
+            staff_completed_at=status_obj.staff_completed_at,
+            completed=status_obj.student_status == 'completed',
+            student_status=status_obj.student_status,
+            student_confirmed_at=status_obj.student_confirmed_at,
+        )
+
+    for session in session_qs:
+        if session.staff_completed:
+            state = state_for(session)
+            _merge_session_state(
+                state,
+                staff_completed=True,
+                staff_completed_at=session.completed_date,
+                student_status='pending',
+            )
+
+    return state_by_number
+
+
+def _session_state_lookup_keys(session):
+    keys = [f"number:{session.session_number}"]
+    title = re.sub(r'\s+', ' ', (session.title or '').strip()).lower()
+    topics = re.sub(r'\s+', ' ', (session.topics or '').strip()).lower()
+    if title:
+        keys.append(f"title:{title}")
+    if topics:
+        keys.append(f"topics:{topics[:180]}")
+    if title and topics:
+        keys.append(f"title_topics:{title}|{topics[:180]}")
+    return keys
+
+
+def _student_session_state_lookup(student, batch=None, base_state=None):
+    lookup = {}
+    base_state = base_state or _student_session_state_by_number(student, batch)
+    sessions = CourseSession.objects.filter(batch=batch) if batch else CourseSession.objects.all()
+    for session in sessions:
+        state = base_state.get(session.session_number)
+        if not state:
+            continue
+        for key in _session_state_lookup_keys(session):
+            lookup[key] = state
+    return lookup
+
+
+def _apply_student_session_state_to_batch(
+        student,
+        target_batch,
+        state_by_number,
+        reset_existing=False,
+        preserve_existing_completion=True,
+        preserve_existing_after=None,
+):
+    sync_missing_sessions_from_logsheet(target_batch)
+    target_sessions = CourseSession.objects.filter(batch=target_batch)
+
+    if reset_existing:
+        target_session_ids = target_sessions.values_list('id', flat=True)
+        Student_Session_Progress.objects.filter(student=student, session_id__in=target_session_ids).delete()
+        StudentSessionStatus.objects.filter(student=student, session_id__in=target_session_ids).delete()
+
+    for target_session in target_sessions.order_by('session_number'):
+        state = state_by_number.get(target_session.session_number, {})
+        if not state:
+            for key in _session_state_lookup_keys(target_session):
+                state = state_by_number.get(key, {})
+                if state:
+                    break
+        progress, _ = Student_Session_Progress.objects.get_or_create(
+            student=student,
+            session=target_session,
+        )
+        status_obj, _ = StudentSessionStatus.objects.get_or_create(
+            student=student,
+            session=target_session,
+        )
+
+        def should_keep_existing_done(done, done_at):
+            if not done or not preserve_existing_completion:
+                return False
+            if not preserve_existing_after:
+                return True
+            if not done_at:
+                return True
+            return done_at > preserve_existing_after
+
+        existing_staff_done = (
+            should_keep_existing_done(progress.staff_completed, progress.staff_completed_at) or
+            should_keep_existing_done(status_obj.staff_completed, status_obj.staff_completed_at)
+        )
+        existing_completed = (
+            should_keep_existing_done(progress.completed, progress.completed_date) or
+            should_keep_existing_done(progress.student_status == 'completed', progress.student_confirmed_at) or
+            should_keep_existing_done(status_obj.student_status == 'completed', status_obj.student_confirmed_at)
+        )
+        staff_done = bool(
+            state.get('staff_completed') or
+            existing_staff_done
+        )
+        completed = bool(
+            state.get('completed') or
+            existing_completed
+        )
+        staff_completed_at = (
+            state.get('staff_completed_at') or
+            (progress.staff_completed_at if should_keep_existing_done(progress.staff_completed, progress.staff_completed_at) else None) or
+            (status_obj.staff_completed_at if should_keep_existing_done(status_obj.staff_completed, status_obj.staff_completed_at) else None)
+        )
+        student_confirmed_at = (
+            state.get('student_confirmed_at') or
+            (progress.student_confirmed_at if should_keep_existing_done(progress.student_status == 'completed', progress.student_confirmed_at) else None) or
+            (status_obj.student_confirmed_at if should_keep_existing_done(status_obj.student_status == 'completed', status_obj.student_confirmed_at) else None)
+        )
+        completed_date = (
+            state.get('completed_date') or
+            (progress.completed_date if should_keep_existing_done(progress.completed, progress.completed_date) else None)
+        )
+
+        existing_student_status = None
+        if should_keep_existing_done(progress.student_status == 'completed', progress.student_confirmed_at):
+            existing_student_status = progress.student_status
+        elif should_keep_existing_done(status_obj.student_status == 'completed', status_obj.student_confirmed_at):
+            existing_student_status = status_obj.student_status
+        elif not preserve_existing_after:
+            existing_student_status = progress.student_status or status_obj.student_status
+
+        student_status = state.get('student_status') or existing_student_status
+        if completed:
+            student_status = 'completed'
+        elif staff_done and student_status == 'not_started':
+            student_status = 'pending'
+        elif not student_status:
+            student_status = 'not_started'
+
+        progress.staff_completed = staff_done
+        progress.staff_completed_at = staff_completed_at if staff_done else None
+        progress.completed = completed
+        progress.completed_date = completed_date
+        progress.student_status = student_status
+        progress.student_confirmed_at = student_confirmed_at
+        progress.save()
+
+        status_obj.staff_completed = staff_done
+        status_obj.staff_completed_at = progress.staff_completed_at
+        status_obj.student_status = 'completed' if completed else ('pending' if staff_done else 'pending')
+        status_obj.student_confirmed_at = student_confirmed_at
+        status_obj.save()
+
+
+def _sync_reassigned_student_progress_for_batch(batch):
+    if not batch:
+        return
+    records = ReassignedStudentRecord.objects.filter(
+        target_batch=batch,
+        student__isnull=False,
+        source_batch__isnull=False,
+    ).select_related('student', 'source_batch')
+    for record in records:
+        source_state = _student_session_state_by_number(record.student, record.source_batch)
+        source_state.update(_student_session_state_lookup(record.student, record.source_batch, source_state))
+        _apply_student_session_state_to_batch(
+            record.student,
+            batch,
+            source_state,
+            preserve_existing_after=record.reassigned_at,
+        )
 
 
 # -- ATTENDANCE ----------------------------------------------------------------
@@ -2418,10 +2908,11 @@ def AttendanceListView(request):
     user = request.user
     student_id = request.GET.get('student')
     batch_id = request.GET.get('batch')
+    course_id = request.GET.get('course_id') or request.GET.get('course')
     date = request.GET.get('date')
     
     # Start with base queryset
-    qs = StudentAttendance.objects.all().order_by('-date')
+    qs = StudentAttendance.objects.select_related('student', 'batch', 'staff', 'session').all().order_by('-date', '-created_at')
     
     # Handle 'me' parameter for student
     if student_id == 'me':
@@ -2433,8 +2924,11 @@ def AttendanceListView(request):
     elif student_id:
         qs = qs.filter(student__id=student_id)
     
-    # Apply other filters
-    if batch_id:
+    # Apply other filters. Course history takes priority over a single batch so
+    # reassigned students can see one continuous course attendance timeline.
+    if course_id:
+        qs = qs.filter(batch__course_name_id=course_id)
+    elif batch_id:
         qs = qs.filter(batch__id=batch_id)
     if date:
         qs = qs.filter(date=date)
@@ -2735,7 +3229,7 @@ def _notification_action_url(notification, request_user):
         batch = _batch_from_duration_notification(notification)
         mentor = getattr(batch, 'faculty', None) if batch else None
         batch_student = (
-            Students.objects.filter(assigned_batch=batch).order_by('first_name', 'last_name', 'id').first()
+            active_students_for_batch(batch).order_by('first_name', 'last_name', 'id').first()
             if batch else None
         )
         employee = Employee.objects.filter(user=request_user).first()
@@ -2816,6 +3310,8 @@ def _notification_action_url(notification, request_user):
 @permission_classes([IsAuthenticated])
 def mark_attendance(request):
     batch_id = request.data.get('batch_id')
+    trainer_id = request.data.get('trainer_id') or request.data.get('staff_id')
+    session_id = request.data.get('session_id')
     date = request.data.get('date')
     attendance_data = request.data.get('attendance', [])
     attendance_date = parse_date(str(date or ''))
@@ -2837,6 +3333,27 @@ def mark_attendance(request):
     except Employee.DoesNotExist:
         return Response({'error': 'Staff not found'}, status=404)
 
+    selected_staff = staff
+    if trainer_id:
+        try:
+            selected_staff = Employee.objects.get(id=trainer_id)
+        except Employee.DoesNotExist:
+            return Response({'error': 'Selected trainer not found'}, status=404)
+
+    if not _is_batch_trainer(batch, selected_staff):
+        return Response({'error': 'Selected trainer is not assigned to this batch.'}, status=403)
+
+    is_counselor = (staff.designation or '').lower() == 'counselor'
+    if selected_staff.id != staff.id and not (request.user.is_superuser or request.user.is_staff or is_counselor):
+        return Response({'error': 'You can mark attendance only for your own trainer section.'}, status=403)
+
+    selected_session = None
+    if session_id:
+        try:
+            selected_session = CourseSession.objects.get(id=session_id, batch=batch)
+        except CourseSession.DoesNotExist:
+            return Response({'error': 'Selected session not found for this batch.'}, status=404)
+
     created = []
     leave_alerts = 0
     batch_duration_alerts = 0
@@ -2846,21 +3363,25 @@ def mark_attendance(request):
             status_value = item.get('status', 'Present')
             att, _ = StudentAttendance.objects.update_or_create(
                 student=student,
+                batch=batch,
+                staff=selected_staff,
                 date=attendance_date,
+                session=selected_session,
                 defaults={
                     'batch': batch,
-                    'staff': staff,
+                    'staff': selected_staff,
+                    'session': selected_session,
                     'status': status_value,
                     'remarks': item.get('remarks', ''),
                 }
             )
             created.append(AttendanceSerializer(att).data)
             if str(status_value).lower() == 'absent':
-                leave_alerts += _send_long_absence_notifications(student, batch, staff, request.user, attendance_date)
+                leave_alerts += _send_long_absence_notifications(student, batch, selected_staff, request.user, attendance_date)
         except Students.DoesNotExist:
             pass
     if created:
-        batch_duration_alerts = _send_batch_duration_notifications(batch, staff, request.user, attendance_date)
+        batch_duration_alerts = _send_batch_duration_notifications(batch, selected_staff, request.user, attendance_date)
     return Response({
         'message': f'{len(created)} records saved.',
         'records': created,
@@ -2872,7 +3393,21 @@ def mark_attendance(request):
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
 def batch_attendance_records(request, batch_id):
-    records = StudentAttendance.objects.filter(batch__id=batch_id).order_by('-date')
+    try:
+        batch = Batches.objects.get(id=batch_id)
+    except Batches.DoesNotExist:
+        return Response({'error': 'Batch not found'}, status=404)
+
+    students = active_students_for_batch(batch)
+    reassigned_student_ids = ReassignedStudentRecord.objects.filter(
+        target_batch=batch,
+        student__isnull=False,
+    ).values_list('student_id', flat=True)
+    records = StudentAttendance.objects.filter(
+        Q(batch=batch) |
+        Q(student__in=students) |
+        Q(student_id__in=reassigned_student_ids)
+    ).select_related('student', 'batch', 'staff', 'session').distinct().order_by('-date', '-created_at')
     return Response(AttendanceSerializer(records, many=True).data)
 
 
@@ -2918,10 +3453,11 @@ class StudyMaterialListView(generics.ListAPIView):
         except Employee.DoesNotExist:
             try:
                 student = Students.objects.get(user=user)
-                if student.assigned_batch:
+                student_batches_list = _student_enrolled_batches(student)
+                if student_batches_list:
                     return qs.filter(
-                        Q(batch=student.assigned_batch) |
-                        Q(assignments__batch=student.assigned_batch)
+                        Q(batch__in=student_batches_list) |
+                        Q(assignments__batch__in=student_batches_list)
                     ).distinct()
                 return qs.none()
             except Students.DoesNotExist:
@@ -4074,6 +4610,13 @@ def quiz_result(request, attempt_id):
 def toggle_quiz_publish(request, quiz_id):
     try:
         quiz = Quiz.objects.get(id=quiz_id)
+        if not (request.user.is_superuser or request.user.is_staff):
+            try:
+                emp = Employee.objects.get(user=request.user)
+            except Employee.DoesNotExist:
+                return Response({'error': 'Employee not found'}, status=404)
+            if quiz.created_by_id != emp.id:
+                return Response({'error': 'You can update only your uploaded quizzes.'}, status=403)
         if not quiz.is_published and quiz.batch_id is None:
             return Response({'error': 'Assign this quiz to a batch before publishing.'}, status=400)
         quiz.is_published = not quiz.is_published
@@ -4090,7 +4633,15 @@ def toggle_quiz_publish(request, quiz_id):
 @permission_classes([IsAuthenticated])
 def delete_quiz(request, quiz_id):
     try:
-        Quiz.objects.get(id=quiz_id).delete()
+        quiz = Quiz.objects.get(id=quiz_id)
+        if not (request.user.is_superuser or request.user.is_staff):
+            try:
+                emp = Employee.objects.get(user=request.user)
+            except Employee.DoesNotExist:
+                return Response({'error': 'Employee not found'}, status=404)
+            if quiz.created_by_id != emp.id:
+                return Response({'error': 'You can delete only your uploaded quizzes.'}, status=403)
+        quiz.delete()
         return Response(status=204)
     except Quiz.DoesNotExist:
         return Response({'error': 'Not found'}, status=404)
@@ -4498,6 +5049,7 @@ def batch_sessions(request, batch_id):
     try:
         batch = Batches.objects.get(id=batch_id)
         sync_missing_sessions_from_logsheet(batch)
+        _sync_reassigned_student_progress_for_batch(batch)
     except Batches.DoesNotExist:
         pass
     sessions = CourseSession.objects.filter(batch__id=batch_id).order_by('session_number')
@@ -4509,11 +5061,44 @@ def batch_sessions(request, batch_id):
 def student_sessions(request):
     try:
         student = Students.objects.get(user=request.user)
-        if not student.assigned_batch:
+        batches = _student_enrolled_batches(student)
+        accessible_batches = _student_accessible_batches(student)
+        if not accessible_batches:
             return Response([])
 
-        sync_missing_sessions_from_logsheet(student.assigned_batch)
-        sessions = CourseSession.objects.filter(batch=student.assigned_batch).order_by('session_number')
+        requested_course_id = request.query_params.get('course_id')
+        requested_batch_id = request.query_params.get('batch_id')
+        if requested_course_id:
+            course_batches = _student_course_batches(student, requested_course_id)
+            if not course_batches:
+                return Response({'error': 'You are not assigned to this course.'}, status=403)
+            for item in course_batches:
+                sync_missing_sessions_from_logsheet(item)
+                _sync_reassigned_student_progress_for_batch(item)
+            raw_sessions = CourseSession.objects.filter(batch__in=course_batches).order_by('session_number', 'batch_id')
+            by_number = {}
+            for item in raw_sessions:
+                current = by_number.get(item.session_number)
+                item_progress = Student_Session_Progress.objects.filter(student=student, session=item).first()
+                item_done = bool(item_progress and item_progress.staff_completed)
+                current_progress = Student_Session_Progress.objects.filter(student=student, session=current).first() if current else None
+                current_done = bool(current_progress and current_progress.staff_completed)
+                if current is None or (item_done and not current_done):
+                    by_number[item.session_number] = item
+            batch = course_batches[0]
+            sessions = [by_number[key] for key in sorted(by_number)]
+        elif requested_batch_id:
+            batch = next((item for item in accessible_batches if str(item.id) == str(requested_batch_id)), None)
+            if not batch:
+                return Response({'error': 'You are not assigned to this batch.'}, status=403)
+            sync_missing_sessions_from_logsheet(batch)
+            _sync_reassigned_student_progress_for_batch(batch)
+            sessions = CourseSession.objects.filter(batch=batch).order_by('session_number')
+        else:
+            batch = student.assigned_batch if student.assigned_batch in batches else batches[0]
+            sync_missing_sessions_from_logsheet(batch)
+            _sync_reassigned_student_progress_for_batch(batch)
+            sessions = CourseSession.objects.filter(batch=batch).order_by('session_number')
         data = []
 
         for session in sessions:
@@ -4558,10 +5143,124 @@ def student_sessions(request):
                 'response_date': response_date,
                 'student_confirmed_at': status_obj.student_confirmed_at if status_obj else None,
                 'completed_date': session.completed_date,
+                'completed_by_name': getattr(session.completed_by, 'first_name', None),
+                'batch_id': batch.id,
+                'batch_number': batch.batch_number,
             })
 
-        return Response({'results': data})
+        return Response({'results': data, 'batch': BatchSerializer(batch, context={'request': request}).data})
 
+    except Students.DoesNotExist:
+        return Response({'error': 'Student not found'}, status=404)
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def student_batches(request):
+    try:
+        student = Students.objects.get(user=request.user)
+        results = []
+        seen_batches = set()
+        reassignment_records = list(ReassignedStudentRecord.objects.filter(student=student).select_related(
+            'source_batch',
+            'source_batch__course_name',
+            'target_batch',
+            'target_batch__course_name',
+            'previous_trainer',
+            'reassigned_trainer',
+        ).order_by('-reassigned_at'))
+        current_target_ids = {
+            record.target_batch_id
+            for record in reassignment_records
+            if record.target_batch_id
+        }
+        previous_source_ids = {
+            record.source_batch_id
+            for record in reassignment_records
+            if record.source_batch_id
+        }
+
+        for batch in _student_enrolled_batches(student):
+            if not batch or batch.id in seen_batches:
+                continue
+            if batch.id in previous_source_ids and batch.id not in current_target_ids and batch.id != student.assigned_batch_id:
+                continue
+            seen_batches.add(batch.id)
+            sync_missing_sessions_from_logsheet(batch)
+            _sync_reassigned_student_progress_for_batch(batch)
+            data = BatchSerializer(batch, context={'request': request}).data
+            total_sessions = CourseSession.objects.filter(batch=batch).count()
+            completed_sessions = Student_Session_Progress.objects.filter(
+                student=student,
+                session__batch=batch,
+                staff_completed=True,
+            ).values('session_id').distinct().count()
+            related_record = next((record for record in reassignment_records if record.target_batch_id == batch.id), None)
+            data.update({
+                'course_group': False,
+                'course_id': batch.course_name_id,
+                'course_name_display': batch.course_name.course_name if batch.course_name else data.get('course_name_display'),
+                'batch_ids': [batch.id],
+                'batch_count': 1,
+                'total_sessions': total_sessions,
+                'completed_sessions': completed_sessions,
+                'progress_percentage': round((completed_sessions / total_sessions * 100) if total_sessions else 0, 1),
+                'assignment_role': 'current',
+                'trainer_status': 'Current Trainer',
+                'assignment_status': 'Active / Current Assignment',
+                'status': 'Active',
+                'is_current_assignment': True,
+                'is_previous_assignment': False,
+            })
+            if related_record:
+                data.update({
+                    'trainer_status': 'Current Trainer / Reassigned To',
+                    'assignment_status': 'Active / Current Assignment',
+                    'reassigned_at': related_record.reassigned_at,
+                    'previous_batch_number': related_record.source_batch_number,
+                    'previous_trainer_name': related_record.previous_trainer_name,
+                    'reassigned_trainer_name': related_record.reassigned_trainer_name,
+                })
+            results.append(data)
+
+        for record in reassignment_records:
+            batch = record.source_batch
+            if not batch or batch.id in seen_batches:
+                continue
+            seen_batches.add(batch.id)
+            sync_missing_sessions_from_logsheet(batch)
+            total_sessions = CourseSession.objects.filter(batch=batch).count() or record.total_sessions
+            completed_sessions = Student_Session_Progress.objects.filter(
+                student=student,
+                session__batch=batch,
+                staff_completed=True,
+            ).values('session_id').distinct().count() or record.completed_sessions
+            data = BatchSerializer(batch, context={'request': request}).data
+            data.update({
+                'course_group': False,
+                'course_id': batch.course_name_id,
+                'course_name_display': batch.course_name.course_name if batch.course_name else record.course_name or data.get('course_name_display'),
+                'batch_ids': [batch.id],
+                'batch_count': 1,
+                'total_sessions': total_sessions,
+                'completed_sessions': completed_sessions,
+                'progress_percentage': round((completed_sessions / total_sessions * 100) if total_sessions else record.completion_percentage or 0, 1),
+                'assignment_role': 'previous',
+                'trainer_status': 'Previous Trainer / Reassigned From',
+                'assignment_status': 'Reassigned / Previous Assignment',
+                'status': 'Reassigned',
+                'is_current_assignment': False,
+                'is_previous_assignment': True,
+                'reassigned_at': record.reassigned_at,
+                'target_batch_number': record.target_batch_number,
+                'previous_trainer_name': record.previous_trainer_name,
+                'reassigned_trainer_name': record.reassigned_trainer_name,
+                'trainer_names': [record.previous_trainer_name] if record.previous_trainer_name else data.get('trainer_names', []),
+                'faculty_name': record.previous_trainer_name or data.get('faculty_name'),
+            })
+            results.append(data)
+
+        return Response({'results': results})
     except Students.DoesNotExist:
         return Response({'error': 'Student not found'}, status=404)
 
@@ -4572,10 +5271,11 @@ def get_batch_sessions_with_logsheet(request, batch_id):
     try:
         batch = Batches.objects.get(id=batch_id)
         sync_missing_sessions_from_logsheet(batch)
+        _sync_reassigned_student_progress_for_batch(batch)
         sessions = CourseSession.objects.filter(batch=batch).order_by('session_number')
 
         # Get active students in this batch
-        active_students = Students.objects.filter(assigned_batch=batch)
+        active_students = active_students_for_batch(batch)
 
         sessions_data = []
         for session in sessions:
@@ -4592,11 +5292,7 @@ def get_batch_sessions_with_logsheet(request, batch_id):
                 session_dict['staff_completed'] = (staff_done_count == active_students.count() and active_students.count() > 0)
             else:
                 # No active students — reset to False so staff sees fresh
-                session_dict['staff_completed'] = False
-                if session.staff_completed:
-                    session.staff_completed = False
-                    session.completed_date = None
-                    session.save()
+                session_dict['staff_completed'] = session.staff_completed
 
             sessions_data.append(session_dict)
 
@@ -4623,11 +5319,22 @@ def staff_mark_session_complete(request, session_id):
         emp = Employee.objects.get(user=request.user)
         session = CourseSession.objects.get(id=session_id)
 
+        if not _is_batch_trainer(session.batch, emp):
+            return Response({'error': 'You are not assigned to this batch.'}, status=403)
+
+        if session.staff_completed:
+            return Response({
+                'success': True,
+                'message': f'Session {session.session_number} is already completed and locked.',
+                'session': CourseSessionSerializer(session).data,
+            })
+
         session.staff_completed = True
         session.completed_date = timezone.now()
+        session.completed_by = emp
         session.save()
 
-        students = Students.objects.filter(assigned_batch=session.batch)
+        students = active_students_for_batch(session.batch)
 
         for student in students:
             status_obj, created = StudentSessionStatus.objects.get_or_create(
@@ -4672,6 +5379,8 @@ def staff_mark_session_complete(request, session_id):
 def staff_unmark_session(request, session_id):
     try:
         session = CourseSession.objects.get(id=session_id)
+        if session.staff_completed:
+            return Response({'error': 'Completed sessions are locked and cannot be unticked.'}, status=400)
         session.staff_completed = False
         session.completed_date = None
         session.save()
@@ -4699,6 +5408,9 @@ def student_mark_completed(request):
     try:
         student = Students.objects.get(user=request.user)
         session = CourseSession.objects.get(id=request.data.get('session_id'))
+        enrolled_batch_ids = {batch.id for batch in _student_enrolled_batches(student)}
+        if session.batch_id not in enrolled_batch_ids:
+            return Response({'error': 'You are not assigned to this session batch.'}, status=403)
 
         # Update StudentSessionStatus
         status_obj, _ = StudentSessionStatus.objects.get_or_create(
@@ -4729,10 +5441,10 @@ def student_mark_completed(request):
         progress.save()
 
         # ========== CHECK IF ALL SESSIONS ARE COMPLETED ==========
-        total_sessions = CourseSession.objects.filter(batch=student.assigned_batch).count()
+        total_sessions = CourseSession.objects.filter(batch=session.batch).count()
         completed_sessions = Student_Session_Progress.objects.filter(
             student=student,
-            session__batch=student.assigned_batch,  # ? only current batch
+            session__batch=session.batch,
             completed=True
         ).count()
 
@@ -5017,11 +5729,8 @@ class CompletedStudentListView(generics.ListAPIView):
                 )
             return qs.none()
         if emp:
-            batch_numbers = Batches.objects.filter(faculty=emp).values_list('batch_number', flat=True)
-            return qs.filter(
-                Q(graduated_from_trainer=emp) |
-                Q(batch_number__in=batch_numbers)
-            ).distinct()
+            staff_completed_ids = completed_students_for_staff(emp).values_list('id', flat=True)
+            return qs.filter(id__in=staff_completed_ids).distinct()
 
         student = Students.objects.filter(user=user).first()
         if student:
@@ -5436,7 +6145,11 @@ def process_completion_request(request, pk):
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
 def get_batch_students(request, batch_id):
-    students = Students.objects.filter(assigned_batch__id=batch_id).select_related('assigned_batch', 'assigned_staff')
+    try:
+        batch = Batches.objects.get(id=batch_id)
+    except Batches.DoesNotExist:
+        return Response({'error': 'Batch not found'}, status=404)
+    students = active_students_for_batch(batch).select_related('assigned_batch', 'assigned_staff')
     return Response([_student_detail_payload(student) for student in students])
 
 
@@ -5453,7 +6166,9 @@ def get_trainers(request):
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
 def trainer_batches(request, trainer_id):
-    batches = Batches.objects.filter(faculty__id=trainer_id)
+    batches = Batches.objects.filter(
+        Q(faculty__id=trainer_id) | Q(trainer_assignments__trainer_id=trainer_id)
+    ).distinct()
     return Response(BatchSerializer(batches, many=True).data)
 
 
@@ -5462,9 +6177,9 @@ def trainer_batches(request, trainer_id):
 def counselor_student_details(request):
     try:
         counselor = Employee.objects.get(user=request.user)
-        students = Students.objects.filter(branch=counselor.branch).select_related('assigned_batch', 'assigned_staff')
+        students = active_students_for_branch(counselor.branch).select_related('assigned_batch', 'assigned_staff')
     except Employee.DoesNotExist:
-        students = Students.objects.all().select_related('assigned_batch', 'assigned_staff')
+        students = active_students_queryset().select_related('assigned_batch', 'assigned_staff')
     return Response(StudentSerializer(students, many=True).data)
 
 
@@ -5537,6 +6252,235 @@ def _student_detail_payload(student):
     return base
 
 
+def _reassignment_employee_name(employee):
+    if not employee:
+        return ''
+    return f"{employee.first_name} {employee.last_name or ''}".strip() or employee.staff_id or ''
+
+
+def _reassignment_student_name(student):
+    return f"{student.first_name} {student.last_name or ''}".strip()
+
+
+def _build_reassignment_snapshot(completion_req, student, source_batch, target_batch, previous_trainer, new_trainer, reassigned_at, reason=''):
+    progress_qs = Student_Session_Progress.objects.filter(
+        student=student,
+        session__batch=source_batch,
+    ).select_related('session').order_by('session__session_number')
+    total_sessions = CourseSession.objects.filter(batch=source_batch).count()
+    completed_progress = progress_qs.filter(completed=True)
+    completed_sessions = completed_progress.count()
+    completed_details = [
+        {
+            'session_number': progress.session.session_number,
+            'title': progress.session.title,
+            'topics': progress.session.topics,
+            'completed_date': progress.completed_date.isoformat() if progress.completed_date else None,
+            'staff_completed_at': progress.staff_completed_at.isoformat() if progress.staff_completed_at else None,
+        }
+        for progress in completed_progress
+    ]
+
+    attendance_qs = StudentAttendance.objects.filter(
+        student=student,
+        batch=source_batch,
+    ).filter(
+        Q(staff=previous_trainer) | Q(date__lte=reassigned_at.date())
+    ).select_related('batch', 'staff').order_by('-date', '-created_at')
+    attendance_total = attendance_qs.count()
+    present_days = attendance_qs.filter(status__iexact='Present').count()
+    absent_days = attendance_qs.filter(status__iexact='Absent').count()
+    attendance_summary = [
+        {
+            'date': record.date.isoformat() if record.date else '',
+            'status': record.status,
+            'batch_number': record.batch.batch_number if record.batch else '',
+            'marked_by': _reassignment_employee_name(record.staff),
+            'remarks': record.remarks or '',
+        }
+        for record in attendance_qs
+    ]
+
+    return {
+        'completion_request': completion_req,
+        'student': student,
+        'previous_trainer': previous_trainer,
+        'reassigned_trainer': new_trainer,
+        'source_batch': source_batch,
+        'target_batch': target_batch,
+        'student_name': _reassignment_student_name(student),
+        'student_code': student.student_id,
+        'course_name': source_batch.course_name.course_name if source_batch and source_batch.course_name else student.course,
+        'source_batch_number': source_batch.batch_number if source_batch else '',
+        'target_batch_number': target_batch.batch_number if target_batch else '',
+        'previous_trainer_name': _reassignment_employee_name(previous_trainer),
+        'reassigned_trainer_name': _reassignment_employee_name(new_trainer),
+        'reassignment_reason': reason or '',
+        'reassigned_at': reassigned_at,
+        'total_sessions': total_sessions,
+        'completed_sessions': completed_sessions,
+        'completion_percentage': round((completed_sessions / total_sessions * 100) if total_sessions else 0, 1),
+        'completed_session_details': completed_details,
+        'attendance_total': attendance_total,
+        'present_days': present_days,
+        'absent_days': absent_days,
+        'attendance_percentage': round((present_days / attendance_total * 100) if attendance_total else 0, 1),
+        'attendance_summary': attendance_summary,
+    }
+
+
+def _upsert_reassignment_record(completion_req, student, source_batch, target_batch, previous_trainer, new_trainer, reassigned_at, reason=''):
+    defaults = _build_reassignment_snapshot(
+        completion_req,
+        student,
+        source_batch,
+        target_batch,
+        previous_trainer,
+        new_trainer,
+        reassigned_at,
+        reason,
+    )
+    record, _ = ReassignedStudentRecord.objects.update_or_create(
+        completion_request=completion_req,
+        defaults=defaults,
+    )
+    return record
+
+
+def _reassignment_attendance_queryset(record):
+    if not record.student:
+        return StudentAttendance.objects.none()
+
+    reassigned_cutoff = record.reassigned_at or timezone.now()
+    source_batch = record.source_batch
+    previous_trainer = record.previous_trainer
+    attendance_filter = Q(date__lte=reassigned_cutoff.date())
+    scope_filter = Q()
+    if source_batch:
+        scope_filter |= Q(batch=source_batch)
+    if previous_trainer:
+        scope_filter |= Q(staff=previous_trainer)
+    if not scope_filter:
+        return StudentAttendance.objects.none()
+    return StudentAttendance.objects.filter(
+        Q(student=record.student) & attendance_filter & scope_filter
+    ).select_related('batch', 'staff', 'session').distinct().order_by('-date', '-created_at')
+
+
+def _reassignment_test_queryset(record):
+    if not record.student:
+        return TestResult.objects.none()
+
+    reassigned_cutoff = record.reassigned_at or timezone.now()
+    source_batch = record.source_batch
+    previous_trainer = record.previous_trainer
+    test_qs = TestResult.objects.filter(
+        student=record.student,
+        submitted_at__lte=reassigned_cutoff,
+    ).select_related('test').order_by('-submitted_at')
+    if previous_trainer or source_batch:
+        test_filter = Q()
+        if previous_trainer:
+            test_filter |= Q(test__created_by=previous_trainer)
+        if source_batch:
+            test_filter |= Q(test__assignedtest__batch=source_batch)
+        test_qs = test_qs.filter(test_filter).distinct()
+    return test_qs
+
+
+def _reassignment_material_count(record):
+    source_batch = record.source_batch
+    previous_trainer = record.previous_trainer
+    if not source_batch or not previous_trainer:
+        return 0
+
+    reassigned_cutoff = record.reassigned_at or timezone.now()
+    direct_material_ids = StudyMaterial.objects.filter(
+        uploaded_by=previous_trainer,
+        batch=source_batch,
+        uploaded_at__lte=reassigned_cutoff,
+    ).values_list('id', flat=True)
+    assigned_material_ids = StudyMaterialAssignment.objects.filter(
+        assigned_by=previous_trainer,
+        batch=source_batch,
+        assigned_at__lte=reassigned_cutoff,
+    ).values_list('material_id', flat=True)
+    return StudyMaterial.objects.filter(
+        id__in=set(list(direct_material_ids) + list(assigned_material_ids))
+    ).count()
+
+
+def _reassignment_record_payload(record, include_details=False):
+    student = record.student
+    attendance_qs = _reassignment_attendance_queryset(record)
+    attendance_total = attendance_qs.count()
+    present_days = attendance_qs.filter(status__iexact='Present').count()
+    absent_days = attendance_qs.filter(status__iexact='Absent').count()
+    attendance_percentage = round((present_days / attendance_total * 100) if attendance_total else 0, 1)
+    if not attendance_total:
+        attendance_total = record.attendance_total
+        present_days = record.present_days
+        absent_days = record.absent_days
+        attendance_percentage = record.attendance_percentage
+
+    test_qs = _reassignment_test_queryset(record)
+    material_uploads_count = _reassignment_material_count(record)
+    test_results_count = test_qs.count()
+    average_test_percentage = round(
+        sum(result.percentage for result in test_qs) / test_results_count,
+        1,
+    ) if test_results_count else 0
+
+    payload = {
+        'id': record.id,
+        'student_name': record.student_name,
+        'student_id': record.student_code,
+        'student_pk': record.student.id if record.student else None,
+        'course_name': record.course_name,
+        'batch_number': record.source_batch_number,
+        'target_batch_number': record.target_batch_number,
+        'previous_trainer': record.previous_trainer_name,
+        'reassigned_trainer': record.reassigned_trainer_name,
+        'reassigned_at': record.reassigned_at,
+        'reassignment_reason': record.reassignment_reason,
+        'progress_percentage': record.completion_percentage,
+        'completed_sessions': record.completed_sessions,
+        'total_sessions': record.total_sessions,
+        'attendance_total': attendance_total,
+        'present_days': present_days,
+        'absent_days': absent_days,
+        'attendance_percentage': attendance_percentage,
+        'test_results_count': test_results_count,
+        'average_test_percentage': average_test_percentage,
+        'material_uploads_count': material_uploads_count,
+    }
+    if include_details:
+        live_attendance_summary = [{
+            'date': attendance.date.isoformat() if attendance.date else '',
+            'status': attendance.status,
+            'batch_number': attendance.batch.batch_number if attendance.batch else '',
+            'marked_by': _reassignment_employee_name(attendance.staff),
+            'session': f"Session {attendance.session.session_number}: {attendance.session.title}" if attendance.session else '',
+            'remarks': attendance.remarks or '',
+        } for attendance in attendance_qs]
+        payload.update({
+            'completed_session_details': record.completed_session_details or [],
+            'attendance_summary': live_attendance_summary or record.attendance_summary or [],
+            'test_results': [{
+                'test_name': result.test.title if result.test else '',
+                'score': result.score,
+                'total_questions': result.total_questions,
+                'percentage': result.percentage,
+                'submitted_at': result.submitted_at.isoformat() if result.submitted_at else None,
+            } for result in test_qs],
+            'source_batch_id': record.source_batch_id,
+            'target_batch_id': record.target_batch_id,
+            'previous_trainer_id': record.previous_trainer_id,
+            'reassigned_trainer_id': record.reassigned_trainer_id,
+        })
+    return payload
+
+
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
 def counselor_student_detail(request, student_id):
@@ -5548,6 +6492,215 @@ def counselor_student_detail(request, student_id):
         return Response({'error': 'Counselor access required.'}, status=403)
     except Students.DoesNotExist:
         return Response({'error': 'Student not found'}, status=404)
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def trainer_reassigned_students(request):
+    try:
+        trainer = Employee.objects.get(user=request.user)
+    except Employee.DoesNotExist:
+        return Response({'error': 'Trainer not found'}, status=404)
+
+    records = ReassignedStudentRecord.objects.filter(previous_trainer=trainer).select_related(
+        'student',
+        'previous_trainer',
+        'reassigned_trainer',
+        'source_batch',
+        'target_batch',
+        'completion_request',
+    ).order_by('-reassigned_at')
+    return Response([_reassignment_record_payload(record) for record in records])
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def trainer_reassigned_student_report(request, record_id):
+    try:
+        trainer = Employee.objects.get(user=request.user)
+    except Employee.DoesNotExist:
+        return Response({'error': 'Trainer not found'}, status=404)
+
+    try:
+        record = ReassignedStudentRecord.objects.select_related(
+            'student',
+            'previous_trainer',
+            'reassigned_trainer',
+            'source_batch',
+            'target_batch',
+            'completion_request',
+        ).get(id=record_id, previous_trainer=trainer)
+    except ReassignedStudentRecord.DoesNotExist:
+        return Response({'error': 'Reassigned student record not found'}, status=404)
+
+    return Response(_reassignment_record_payload(record, include_details=True))
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def trainer_reassigned_student_report_pdf(request, record_id):
+    try:
+        trainer = Employee.objects.get(user=request.user)
+    except Employee.DoesNotExist:
+        return Response({'error': 'Trainer not found'}, status=404)
+
+    try:
+        record = ReassignedStudentRecord.objects.select_related(
+            'student',
+            'previous_trainer',
+            'reassigned_trainer',
+            'source_batch',
+            'target_batch',
+            'completion_request',
+        ).get(id=record_id, previous_trainer=trainer)
+    except ReassignedStudentRecord.DoesNotExist:
+        return Response({'error': 'Reassigned student record not found'}, status=404)
+
+    try:
+        from io import BytesIO
+        from reportlab.lib import colors
+        from reportlab.lib.enums import TA_CENTER, TA_LEFT
+        from reportlab.lib.pagesizes import A4
+        from reportlab.lib.styles import ParagraphStyle
+        from reportlab.lib.units import mm
+        from reportlab.platypus import Image as RLImage, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+    except Exception as exc:
+        return Response({'error': f'PDF dependency error: {exc}'}, status=500)
+
+    report = _reassignment_record_payload(record, include_details=True)
+
+    def display(value):
+        return '-' if value is None or value == '' else str(value)
+
+    def safe_filename(value):
+        return re.sub(r'[^\w\s-]', '', display(value)).strip().replace(' ', '_') or 'student'
+
+    navy = colors.HexColor('#0f1b2d')
+    amber = colors.HexColor('#f4a940')
+    light = colors.HexColor('#f8fafc')
+    border = colors.HexColor('#e8e6e1')
+    slate = colors.HexColor('#58677a')
+
+    buf = BytesIO()
+    doc = SimpleDocTemplate(
+        buf,
+        pagesize=A4,
+        leftMargin=16 * mm,
+        rightMargin=16 * mm,
+        topMargin=14 * mm,
+        bottomMargin=14 * mm,
+    )
+    width = A4[0] - 32 * mm
+    title_style = ParagraphStyle('Title', fontName='Helvetica-Bold', fontSize=18, textColor=colors.white, alignment=TA_LEFT)
+    subtitle_style = ParagraphStyle('Subtitle', fontName='Helvetica', fontSize=9, textColor=colors.HexColor('#fff4d6'), alignment=TA_LEFT)
+    section_style = ParagraphStyle('Section', fontName='Helvetica-Bold', fontSize=12, textColor=navy, spaceBefore=10, spaceAfter=6)
+    label_style = ParagraphStyle('Label', fontName='Helvetica-Bold', fontSize=8, textColor=slate)
+    value_style = ParagraphStyle('Value', fontName='Helvetica', fontSize=9, textColor=navy)
+    body_style = ParagraphStyle('Body', fontName='Helvetica', fontSize=9, leading=13, textColor=navy)
+    small_style = ParagraphStyle('Small', fontName='Helvetica', fontSize=8, leading=11, textColor=slate)
+
+    logo_path = Path(settings.BASE_DIR) / 'connect' / 'assets' / 'IIE.png'
+    logo = RLImage(str(logo_path), width=26 * mm, height=18 * mm) if logo_path.exists() else Paragraph('IIE Pulse', title_style)
+    header = Table(
+        [[logo, Paragraph('Reassigned Student Completion Report', title_style), Paragraph(display(report.get('reassigned_at'))[:10], subtitle_style)]],
+        colWidths=[width * 0.18, width * 0.62, width * 0.20],
+    )
+    header.setStyle(TableStyle([
+        ('BACKGROUND', (0, 0), (-1, -1), navy),
+        ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+        ('TOPPADDING', (0, 0), (-1, -1), 10),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 10),
+        ('LEFTPADDING', (0, 0), (-1, -1), 10),
+        ('RIGHTPADDING', (0, 0), (-1, -1), 10),
+    ]))
+
+    def info_table(rows):
+        table = Table(
+            [[Paragraph(label, label_style), Paragraph(display(value), value_style)] for label, value in rows],
+            colWidths=[width * 0.30, width * 0.70],
+        )
+        table.setStyle(TableStyle([
+            ('GRID', (0, 0), (-1, -1), 0.35, border),
+            ('BACKGROUND', (0, 0), (0, -1), light),
+            ('ROWBACKGROUNDS', (0, 0), (-1, -1), [colors.white, light]),
+            ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+            ('TOPPADDING', (0, 0), (-1, -1), 6),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 6),
+            ('LEFTPADDING', (0, 0), (-1, -1), 8),
+            ('RIGHTPADDING', (0, 0), (-1, -1), 8),
+        ]))
+        return table
+
+    story = [header, Spacer(1, 10)]
+    story.append(info_table([
+        ('Student', f"{display(report.get('student_name'))} ({display(report.get('student_id'))})"),
+        ('Course', report.get('course_name')),
+        ('Source Batch', report.get('batch_number')),
+        ('Target Batch', report.get('target_batch_number')),
+        ('Previous Trainer', report.get('previous_trainer')),
+        ('Reassigned Trainer', report.get('reassigned_trainer')),
+        ('Reason', report.get('reassignment_reason')),
+    ]))
+
+    story.append(Paragraph('Summary', section_style))
+    story.append(info_table([
+        ('Sessions Completed', f"{report.get('completed_sessions', 0)} / {report.get('total_sessions', 0)} ({report.get('progress_percentage', 0)}%)"),
+        ('Attendance', f"{report.get('present_days', 0)} present, {report.get('absent_days', 0)} absent ({report.get('attendance_percentage', 0)}%)"),
+        ('Average Test Result', f"{report.get('average_test_percentage', 0)}% from {report.get('test_results_count', 0)} tests"),
+        ('Materials Uploaded', report.get('material_uploads_count', 0)),
+    ]))
+
+    story.append(Paragraph('Completed Sessions', section_style))
+    completed_sessions = report.get('completed_session_details') or []
+    if completed_sessions:
+        for session in completed_sessions:
+            text = (
+                f"<b>Session {display(session.get('session_number'))}: {display(session.get('title'))}</b><br/>"
+                f"{display(session.get('topics'))}<br/>"
+                f"<font color='#58677a'>Completed: {display(session.get('staff_completed_at') or session.get('completed_date'))}</font>"
+            )
+            story.append(Paragraph(text, body_style))
+            story.append(Spacer(1, 6))
+    else:
+        story.append(Paragraph('No completed sessions recorded.', small_style))
+
+    story.append(Paragraph('Attendance History', section_style))
+    attendance_rows = [[
+        Paragraph('Date', label_style),
+        Paragraph('Status', label_style),
+        Paragraph('Batch', label_style),
+        Paragraph('Marked By', label_style),
+        Paragraph('Session / Remarks', label_style),
+    ]]
+    for attendance in report.get('attendance_summary') or []:
+        detail = attendance.get('session') or attendance.get('remarks') or '-'
+        attendance_rows.append([
+            Paragraph(display(attendance.get('date')), value_style),
+            Paragraph(display(attendance.get('status')), value_style),
+            Paragraph(display(attendance.get('batch_number')), value_style),
+            Paragraph(display(attendance.get('marked_by')), value_style),
+            Paragraph(display(detail), value_style),
+        ])
+    if len(attendance_rows) == 1:
+        story.append(Paragraph('No attendance history recorded.', small_style))
+    else:
+        table = Table(attendance_rows, colWidths=[width * 0.15, width * 0.14, width * 0.18, width * 0.22, width * 0.31], repeatRows=1)
+        table.setStyle(TableStyle([
+            ('BACKGROUND', (0, 0), (-1, 0), amber),
+            ('GRID', (0, 0), (-1, -1), 0.35, border),
+            ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+            ('TOPPADDING', (0, 0), (-1, -1), 5),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 5),
+        ]))
+        story.append(table)
+
+    doc.build(story)
+    pdf = buf.getvalue()
+    buf.close()
+    filename = f"{safe_filename(report.get('student_name'))}_Reassigned_Completion_Report.pdf"
+    response = HttpResponse(pdf, content_type='application/pdf')
+    response['Content-Disposition'] = f'attachment; filename="{filename}"'
+    return response
 
 
 
@@ -5592,7 +6745,8 @@ def counselor_reassign_student(request, request_id):
 
         def copy_student_progress_to_batch(target_batch, copy_batch_sessions=False):
             source_sessions = CourseSession.objects.filter(batch=source_batch).order_by('session_number')
-            source_by_number = {session.session_number: session for session in source_sessions}
+            source_state = _student_session_state_by_number(student, source_batch)
+            source_state.update(_student_session_state_lookup(student, source_batch, source_state))
 
             if copy_batch_sessions:
                 for source_session in source_sessions:
@@ -5608,65 +6762,10 @@ def counselor_reassign_student(request, request_id):
                         }
                     )
 
-            target_sessions = CourseSession.objects.filter(batch=target_batch).order_by('session_number')
-            for target_session in target_sessions:
-                source_session = source_by_number.get(target_session.session_number)
-                if not source_session:
-                    continue
-
-                old_progress = Student_Session_Progress.objects.filter(
-                    student=student,
-                    session=source_session
-                ).first()
-                old_status = StudentSessionStatus.objects.filter(
-                    student=student,
-                    session=source_session
-                ).first()
-                if not old_progress and not old_status and not source_session.staff_completed:
-                    continue
-
-                staff_done = bool(
-                    (old_progress and old_progress.staff_completed) or
-                    (old_status and old_status.staff_completed) or
-                    source_session.staff_completed
-                )
-                student_status = (
-                    old_progress.student_status if old_progress else
-                    old_status.student_status if old_status else
-                    'pending' if staff_done else 'not_started'
-                )
-                completed = bool(old_progress and old_progress.completed) or student_status == 'completed'
-
-                progress, _ = Student_Session_Progress.objects.get_or_create(
-                    student=student,
-                    session=target_session
-                )
-                progress.staff_completed = staff_done
-                progress.staff_completed_at = (
-                    old_progress.staff_completed_at if old_progress else
-                    old_status.staff_completed_at if old_status else
-                    source_session.completed_date
-                )
-                progress.completed = completed
-                progress.completed_date = old_progress.completed_date if old_progress else None
-                progress.student_status = student_status
-                progress.student_confirmed_at = (
-                    old_progress.student_confirmed_at if old_progress else
-                    old_status.student_confirmed_at if old_status else None
-                )
-                progress.save()
-
-                status_obj, _ = StudentSessionStatus.objects.get_or_create(
-                    student=student,
-                    session=target_session
-                )
-                status_obj.staff_completed = staff_done
-                status_obj.staff_completed_at = progress.staff_completed_at
-                status_obj.student_status = 'completed' if completed else ('pending' if staff_done else 'pending')
-                status_obj.student_confirmed_at = progress.student_confirmed_at
-                status_obj.save()
+            _apply_student_session_state_to_batch(student, target_batch, source_state)
 
         with transaction.atomic():
+            reassigned_at = timezone.now()
             if batch_mode == 'new':
                 new_batch = Batches.objects.create(
                     batch_number=generate_batch_number(new_trainer.branch),
@@ -5695,16 +6794,26 @@ def counselor_reassign_student(request, request_id):
             student.branch = target_batch.branch
             student.assigned_staff = new_trainer
             student.assigned_batch = target_batch
-            student.transfer_date = timezone.now()
+            student.transfer_date = reassigned_at
             student.save()
 
             completion_req.new_trainer = new_trainer
             completion_req.counselor_notes = counselor_notes
             completion_req.status = 'reassigned'
-            completion_req.reviewed_at = timezone.now()
+            completion_req.reviewed_at = reassigned_at
             completion_req.reviewed_by = request.user
-            completion_req.reassigned_at = timezone.now()
+            completion_req.reassigned_at = reassigned_at
             completion_req.save()
+            _upsert_reassignment_record(
+                completion_req,
+                student,
+                source_batch,
+                target_batch,
+                completion_req.trainer,
+                new_trainer,
+                reassigned_at,
+                counselor_notes,
+            )
 
         student.refresh_from_db()
 
@@ -6055,7 +7164,7 @@ def admin_branch_attendance(request):
             'total_staff': total_staff,
             'staff_with_batches': staff_with_batches,
             'total_branches': len(branches),
-            'total_students': Students.objects.count(),
+            'total_students': active_students_queryset().count(),
             'total_batches': Batches.objects.count(),
             'total_attendance': StudentAttendance.objects.count(),
         })
@@ -6238,9 +7347,9 @@ def _tracking_counselor_metrics(staff):
     month_since = now - timedelta(days=30)
     branch_values = _tracking_branch_values(staff.branch)
 
-    branch_students = Students.objects.filter(branch__in=branch_values)
+    branch_students = active_students_for_branch(staff.branch)
     branch_batches = Batches.objects.filter(branch__in=branch_values)
-    assigned_students = branch_students.filter(Q(assigned_staff__isnull=False) | Q(assigned_batch__isnull=False))
+    assigned_students = assigned_students_for_branch(staff.branch)
     fee_payments = FeePayment.objects.filter(student__branch__in=branch_values)
     fee_transactions = FeeTransaction.objects.filter(
         Q(collected_by=staff.user) | Q(fee_payment__student__branch__in=branch_values)
@@ -6292,7 +7401,7 @@ def _tracking_batch_completion(batch, staff, batch_students=None):
     session_ids = [session.id for session in sessions]
     total_sessions = len(session_ids)
     if batch_students is None:
-        batch_students = Students.objects.filter(assigned_batch=batch)
+        batch_students = active_students_for_batch(batch)
     student_ids = list(batch_students.values_list('id', flat=True))
     student_count = len(student_ids)
     if not total_sessions or not student_count:
@@ -6356,7 +7465,7 @@ def _tracking_staff_card_summary(staff):
             'batch_count': metrics['branch_batches'].count(),
             'student_count': metrics['branch_students'].count(),
             'assigned_students_count': metrics['assigned_students'].count(),
-            'completed_students_count': CompletedStudent.objects.filter(branch__in=_tracking_branch_values(staff.branch), completion_type='full').count(),
+            'completed_students_count': completed_students_for_branch(staff.branch).count(),
             'attendance_marked_count': 0,
             'attendance_days_count': 0,
             'sessions_completed': 0,
@@ -6392,7 +7501,7 @@ def _tracking_staff_card_summary(staff):
 
     batches = Batches.objects.filter(faculty=staff)
     batch_count = batches.count()
-    students = Students.objects.filter(Q(assigned_staff=staff) | Q(assigned_batch__faculty=staff)).distinct()
+    students = active_students_for_staff(staff)
     sessions_total = CourseSession.objects.filter(batch__in=batches).count()
     sessions_completed = max(
         DailySessionCompletion.objects.filter(faculty=staff, session__batch__in=batches, completed=True).values('session_id').distinct().count(),
@@ -6416,7 +7525,7 @@ def _tracking_staff_card_summary(staff):
         'staff': EmployeeSerializer(staff).data,
         'batch_count': batch_count,
         'student_count': students.count(),
-        'completed_students_count': CompletedStudent.objects.filter(graduated_from_trainer=staff, completion_type='full').count(),
+        'completed_students_count': completed_students_for_staff(staff).count(),
         'attendance_marked_count': StudentAttendance.objects.filter(staff=staff).count(),
         'attendance_days_count': StudentAttendance.objects.filter(staff=staff).values('date').distinct().count(),
         'sessions_completed': sessions_completed,
@@ -6453,7 +7562,7 @@ def _tracking_staff_summary(staff):
             'completed_batch_count': 0,
             'student_count': metrics['branch_students'].count(),
             'assigned_students_count': metrics['assigned_students'].count(),
-            'completed_students_count': CompletedStudent.objects.filter(branch__in=_tracking_branch_values(staff.branch), completion_type='full').count(),
+            'completed_students_count': completed_students_for_branch(staff.branch).count(),
             'attendance_marked_count': 0,
             'attendance_days_count': 0,
             'sessions_completed': 0,
@@ -6490,9 +7599,7 @@ def _tracking_staff_summary(staff):
     new_since = timezone.now() - timedelta(days=7)
     batches = Batches.objects.filter(faculty=staff)
     batch_count = batches.count()
-    students = Students.objects.filter(
-        Q(assigned_staff=staff) | Q(assigned_batch__faculty=staff)
-    ).distinct()
+    students = active_students_for_staff(staff)
     attendance_total = StudentAttendance.objects.filter(staff=staff).count()
     attendance_dates = StudentAttendance.objects.filter(staff=staff).values('date').distinct().count()
     batch_completion_stats = [_tracking_batch_completion(batch, staff) for batch in batches]
@@ -6511,7 +7618,7 @@ def _tracking_staff_summary(staff):
     material_batch_count = material_assignments.values('batch_id').distinct().count()
     quizzes_created = Quiz.objects.filter(created_by=staff).count()
     quiz_attempts = QuizAttempt.objects.filter(quiz__batch__in=batches, is_completed=True).count()
-    completed_students = CompletedStudent.objects.filter(graduated_from_trainer=staff, completion_type='full').count()
+    completed_students = completed_students_for_staff(staff).count()
 
     def percent_of_target(value, target):
         return round(min(100, (value / target * 100) if target else 0), 1)
@@ -6631,7 +7738,7 @@ def admin_employee_tracking(request):
             'totals': {
                 'branches': len(branches),
                 'staff': Employee.objects.count(),
-                'students': Students.objects.count(),
+                'students': active_students_queryset().count(),
                 'batches': Batches.objects.count(),
             },
         })
@@ -6664,7 +7771,7 @@ def admin_employee_tracking(request):
         if summary.get('tracking_type') == 'counselor':
             branch_values = _tracking_branch_values(staff.branch)
             month_since = timezone.now() - timedelta(days=30)
-            students = Students.objects.filter(branch__in=branch_values).select_related('assigned_batch', 'assigned_staff').order_by('first_name', 'last_name')
+            students = active_students_for_branch(staff.branch).select_related('assigned_batch', 'assigned_staff').order_by('first_name', 'last_name')
             last_month_students = students.filter(created_at__gte=month_since).order_by('-created_at')
             fee_transactions_qs = FeeTransaction.objects.filter(
                 Q(collected_by=staff.user) | Q(fee_payment__student__branch__in=branch_values)
@@ -6929,7 +8036,7 @@ def admin_employee_tracking(request):
                 'timing': batch.batch_timing,
                 'start_date': batch.start_date,
                 'end_date': batch.end_date,
-                'student_count': Students.objects.filter(assigned_batch=batch).count(),
+                'student_count': active_students_for_batch(batch).count(),
                 'session_count': CourseSession.objects.filter(batch=batch).count(),
                 'is_new': batch.created_at >= new_since,
             } for batch in batches],
@@ -7230,7 +8337,7 @@ def admin_employee_tracking_pdf(request):
     batch_rows = []
     for batch in batches:
         completion = _tracking_batch_completion(batch, staff)
-        batch_students = Students.objects.filter(assigned_batch=batch)
+        batch_students = active_students_for_batch(batch)
         total_sessions = completion['total_sessions']
         direct_material_ids = StudyMaterial.objects.filter(uploaded_by=staff, batch=batch).values_list('id', flat=True)
         assigned_material_ids = StudyMaterialAssignment.objects.filter(
@@ -8231,7 +9338,7 @@ def sync_missing_sessions_from_logsheet(batch, debug=False, prefer_course_logshe
 
 
 def _ensure_student_session_rows(batch, sessions):
-    students = Students.objects.filter(assigned_batch=batch)
+    students = active_students_for_batch(batch)
     for student in students:
         for session in sessions:
             Student_Session_Progress.objects.get_or_create(
@@ -8298,7 +9405,7 @@ def extract_and_store_sessions(request, batch_id):
         before_count = CourseSession.objects.filter(batch=batch).count()
         added_count = sync_missing_sessions_from_logsheet(batch, debug=True)
         sessions = CourseSession.objects.filter(batch=batch).order_by('session_number')
-        students_count = Students.objects.filter(assigned_batch=batch).count()
+        students_count = active_students_for_batch(batch).count()
         
         print(f"\n[SESSION_EXTRACT] COMPLETE:")
         print(f"  ? PDF sessions detected: {len(sessions_data)}")
@@ -8410,13 +9517,14 @@ def student_quizzes(request):
     """Get quizzes available for the logged-in student with ALL options"""
     try:
         student = Students.objects.get(user=request.user)
-        if not student.assigned_batch:
+        student_batches_list = _student_enrolled_batches(student)
+        if not student_batches_list:
             return Response({'results': []})
         
         quizzes = Quiz.objects.filter(
-            batch=student.assigned_batch,
+            batch__in=student_batches_list,
             is_published=True
-        ).distinct().order_by('-created_at')
+        ).select_related('batch', 'batch__course_name').distinct().order_by('-created_at')
         
         data = []
         for quiz in quizzes:
@@ -8458,6 +9566,9 @@ def student_quizzes(request):
                 'status': 'completed' if is_completed else 'available',
                 'last_attempt_id': best_score.id if best_score else None,
                 'completed_at': best_score.submitted_at if best_score else None,
+                'batch_id': quiz.batch_id,
+                'batch_number': quiz.batch.batch_number if quiz.batch else '',
+                'course_name': quiz.batch.course_name.course_name if quiz.batch and quiz.batch.course_name else '',
                 'questions': questions_data
             })
         
@@ -8473,7 +9584,8 @@ def student_take_quiz(request, quiz_id):
         student = Students.objects.get(user=request.user)
         quiz = Quiz.objects.get(id=quiz_id, is_published=True)
         
-        assigned_to_batch = bool(student.assigned_batch and quiz.batch_id == student.assigned_batch_id)
+        assigned_batch_ids = [batch.id for batch in _student_enrolled_batches(student)]
+        assigned_to_batch = bool(quiz.batch_id in assigned_batch_ids)
 
         if not assigned_to_batch:
             return Response({'error': 'This quiz is not assigned to your batch'}, status=400)
@@ -8716,13 +9828,14 @@ def student_assigned_tests(request):
     except Students.DoesNotExist:
         return Response([])
 
-    if not student.assigned_batch:
+    student_batches_list = _student_enrolled_batches(student)
+    if not student_batches_list:
         return Response([])
 
-    # Only tests assigned to THIS student's batch.
+    # Only tests assigned to this student's active batches.
     assigned = AssignedTest.objects.filter(
-        batch=student.assigned_batch
-    ).select_related('test').order_by('-assigned_date')
+        batch__in=student_batches_list
+    ).select_related('test', 'batch', 'batch__course_name').order_by('-assigned_date')
 
     data = []
     assigned_test_ids = set()
@@ -8734,10 +9847,13 @@ def student_assigned_tests(request):
             'id': a.id,
             'test_id': test.id,
             'test_title': test.title,
-            'test_description': test.description,
-            'total_questions': questions.count(),
-            'assigned_date': a.assigned_date if hasattr(a, 'assigned_date') else None,
-        })
+                'test_description': test.description,
+                'total_questions': questions.count(),
+                'assigned_date': a.assigned_date if hasattr(a, 'assigned_date') else None,
+                'batch_id': a.batch_id,
+                'batch_number': a.batch.batch_number if a.batch else '',
+                'course_name': a.batch.course_name.course_name if a.batch and a.batch.course_name else '',
+            })
 
     # Legacy safety: older mentor-created tests sometimes exist without an
     # AssignedTest row, so include mentor-owned tests without duplicates.
@@ -8799,12 +9915,13 @@ def student_take_test(request, test_id):
         test = QuizTest.objects.get(id=test_id)
         
         # Check if student is in a batch that has this test assigned
-        if not student.assigned_batch:
+        student_batches_list = _student_enrolled_batches(student)
+        if not student_batches_list:
             return Response({'error': 'You are not assigned to any batch'}, status=400)
         
         assigned_exists = AssignedTest.objects.filter(
             test=test,
-            batch=student.assigned_batch
+            batch__in=student_batches_list
         ).exists()
         mentor_owned_test = bool(student.assigned_staff_id and test.created_by_id == student.assigned_staff_id)
         
@@ -10376,7 +11493,7 @@ def trainer_announcement_students(request):
         return Response({'error': 'Permission denied'}, status=403)
 
     batch_id = request.query_params.get('batch')
-    students = Students.objects.filter(Q(assigned_staff=trainer) | Q(assigned_batch__faculty=trainer)).distinct()
+    students = active_students_for_staff(trainer)
     if batch_id:
         students = students.filter(assigned_batch_id=batch_id)
 
@@ -10487,40 +11604,21 @@ def counselor_branch_students(request):
     """
     try:
         emp = Employee.objects.get(user=request.user, designation='counselor')
-        from connect.models import Students, CompletedStudent
-
-        # Only FULLY completed students should be excluded
-        try:
-            fully_completed_emails = set(
-                CompletedStudent.objects.filter(completion_type='full').values_list('email', flat=True)
-            )
-            fully_completed_sids = set(
-                CompletedStudent.objects.filter(completion_type='full').values_list('original_student_id', flat=True)
-            )
-        except DatabaseError:
-            logger.exception("Database error while querying CompletedStudent.completion_type in counselor_branch_students")
-            fully_completed_emails = set()
-            fully_completed_sids = set()
-
-        all_students = Students.objects.filter(branch__iexact=emp.branch)
+        all_students = active_students_for_branch(emp.branch)
 
         batch_id = request.query_params.get('batch')
         if batch_id:
             all_students = all_students.filter(assigned_batch_id=batch_id)
 
-        print(f"[DEBUG] branch={emp.branch}, total={all_students.count()}, fully_completed={len(fully_completed_emails)}")
-
-        active = []
-        for s in all_students:
-            if s.email in fully_completed_emails or s.student_id in fully_completed_sids:
-                continue
-            active.append({
+        active = [
+            {
                 'id':         s.id,
                 'name':       f'{s.first_name} {s.last_name}'.strip(),
                 'student_id': s.student_id,
-            })
+            }
+            for s in all_students.order_by('first_name', 'student_id')
+        ]
 
-        print(f"[DEBUG] active count={len(active)}")
         return Response(active)
     except Employee.DoesNotExist:
         return Response({'error': 'Permission denied'}, status=403)

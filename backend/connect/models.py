@@ -117,6 +117,32 @@ class Batches ( models.Model ) :
                     original_file.close()
         
         super ( ).save ( *args , **kwargs )
+
+
+class BatchTrainerAssignment ( models.Model ) :
+    batch = models.ForeignKey (
+            Batches ,
+            on_delete = models.CASCADE ,
+            related_name = 'trainer_assignments'
+    )
+    trainer = models.ForeignKey (
+            Employee ,
+            on_delete = models.CASCADE ,
+            related_name = 'batch_trainer_assignments'
+    )
+    is_primary = models.BooleanField ( default = False )
+    assigned_at = models.DateTimeField ( auto_now_add = True )
+
+    class Meta :
+        db_table = 'batch_trainer_assignments'
+        unique_together = [ 'batch' , 'trainer' ]
+        indexes = [
+                models.Index ( fields = [ 'batch' , 'trainer' ] ) ,
+                models.Index ( fields = [ 'trainer' ] ) ,
+        ]
+
+    def __str__ ( self ) :
+        return f"{self.batch.batch_number} - {self.trainer.first_name}"
         
         
 class Students ( models.Model ) :
@@ -221,6 +247,80 @@ class Students ( models.Model ) :
         self.save ( )
 
 
+class StudentBatchEnrollment ( models.Model ) :
+    student = models.ForeignKey (
+            Students ,
+            on_delete = models.CASCADE ,
+            related_name = 'batch_enrollments'
+    )
+    batch = models.ForeignKey (
+            Batches ,
+            on_delete = models.CASCADE ,
+            related_name = 'student_enrollments'
+    )
+    course_enrollment = models.ForeignKey (
+            'StudentCourseEnrollment' ,
+            on_delete = models.SET_NULL ,
+            null = True ,
+            blank = True ,
+            related_name = 'batch_assignments'
+    )
+    assigned_by = models.ForeignKey (
+            User ,
+            on_delete = models.SET_NULL ,
+            null = True ,
+            blank = True ,
+            related_name = 'student_batch_assignments'
+    )
+    is_active = models.BooleanField ( default = True )
+    assigned_at = models.DateTimeField ( auto_now_add = True )
+
+    class Meta :
+        db_table = 'student_batch_enrollments'
+        unique_together = [ 'student' , 'batch' ]
+        indexes = [
+                models.Index ( fields = [ 'student' , 'batch' ] ) ,
+                models.Index ( fields = [ 'batch' , 'is_active' ] ) ,
+        ]
+
+    def __str__ ( self ) :
+        return f"{self.student.student_id} - {self.batch.batch_number}"
+
+
+class StudentCourseEnrollment ( models.Model ) :
+    student = models.ForeignKey (
+            Students ,
+            on_delete = models.CASCADE ,
+            related_name = 'course_enrollments'
+    )
+    course = models.ForeignKey (
+            Courses ,
+            on_delete = models.CASCADE ,
+            related_name = 'student_enrollments'
+    )
+    enrolled_by = models.ForeignKey (
+            User ,
+            on_delete = models.SET_NULL ,
+            null = True ,
+            blank = True ,
+            related_name = 'student_course_enrollments'
+    )
+    is_active = models.BooleanField ( default = True )
+    enrolled_at = models.DateTimeField ( auto_now_add = True )
+    updated_at = models.DateTimeField ( auto_now = True )
+
+    class Meta :
+        db_table = 'student_course_enrollments'
+        unique_together = [ 'student' , 'course' ]
+        indexes = [
+                models.Index ( fields = [ 'student' , 'course' ] ) ,
+                models.Index ( fields = [ 'course' , 'is_active' ] ) ,
+        ]
+
+    def __str__ ( self ) :
+        return f"{self.student.student_id} - {self.course.course_name}"
+
+
 class StudentAttendance ( models.Model ) :
     ATTENDANCE_STATUS = [
             ('Present' , 'Present') ,
@@ -230,6 +330,7 @@ class StudentAttendance ( models.Model ) :
     student = models.ForeignKey ( 'Students' , on_delete = models.CASCADE )
     batch = models.ForeignKey ( 'Batches' , on_delete = models.CASCADE , null = True , blank = True )
     staff = models.ForeignKey ( 'Employee' , on_delete = models.CASCADE )
+    session = models.ForeignKey ( 'CourseSession' , on_delete = models.SET_NULL , null = True , blank = True , related_name = 'attendance_records' )
     date = models.DateField ( default = date.today )
     status = models.CharField ( max_length = 10 , choices = ATTENDANCE_STATUS )
     remarks = models.CharField ( max_length = 255 , blank = True , null = True )
@@ -237,7 +338,7 @@ class StudentAttendance ( models.Model ) :
     
     class Meta :
         db_table = 'student_attendance'
-        unique_together = ('student' , 'date')
+        unique_together = ('student' , 'batch' , 'staff' , 'date' , 'session')
         ordering = [ '-date' ]
     
     def __str__ ( self ) :
@@ -658,6 +759,13 @@ class CourseSession ( models.Model ) :
     staff_completed = models.BooleanField ( default = False )
     session_enabled = models.BooleanField ( default = True )
     completed_date = models.DateTimeField ( null = True , blank = True )
+    completed_by = models.ForeignKey (
+            Employee ,
+            on_delete = models.SET_NULL ,
+            null = True ,
+            blank = True ,
+            related_name = 'completed_course_sessions'
+    )
     
     created_at = models.DateTimeField ( auto_now_add = True )
     updated_at = models.DateTimeField ( auto_now = True )
@@ -1274,6 +1382,87 @@ class CompletedStudent(models.Model):
             delta = self.completion_date.date() - self.batch_start_date
             return delta.days
         return 0
+
+
+class ReassignedStudentRecord(models.Model):
+    """Immutable snapshot of a student's trainer progress at reassignment time."""
+
+    completion_request = models.OneToOneField(
+        'SessionCompletionRequest',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='reassignment_record'
+    )
+    student = models.ForeignKey(
+        'Students',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='reassignment_records'
+    )
+    previous_trainer = models.ForeignKey(
+        'Employee',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='reassigned_from_records'
+    )
+    reassigned_trainer = models.ForeignKey(
+        'Employee',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='reassigned_to_records'
+    )
+    source_batch = models.ForeignKey(
+        'Batches',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='reassigned_from_records'
+    )
+    target_batch = models.ForeignKey(
+        'Batches',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='reassigned_to_records'
+    )
+
+    student_name = models.CharField(max_length=220)
+    student_code = models.CharField(max_length=50)
+    course_name = models.CharField(max_length=255, blank=True)
+    source_batch_number = models.CharField(max_length=80, blank=True)
+    target_batch_number = models.CharField(max_length=80, blank=True)
+    previous_trainer_name = models.CharField(max_length=220, blank=True)
+    reassigned_trainer_name = models.CharField(max_length=220, blank=True)
+    reassignment_reason = models.TextField(blank=True, null=True)
+    reassigned_at = models.DateTimeField()
+
+    total_sessions = models.IntegerField(default=0)
+    completed_sessions = models.IntegerField(default=0)
+    completion_percentage = models.FloatField(default=0)
+    completed_session_details = models.JSONField(default=list, blank=True)
+
+    attendance_total = models.IntegerField(default=0)
+    present_days = models.IntegerField(default=0)
+    absent_days = models.IntegerField(default=0)
+    attendance_percentage = models.FloatField(default=0)
+    attendance_summary = models.JSONField(default=list, blank=True)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = 'reassigned_student_records'
+        ordering = ['-reassigned_at']
+        indexes = [
+            models.Index(fields=['previous_trainer', 'reassigned_at']),
+            models.Index(fields=['student', 'source_batch']),
+        ]
+
+    def __str__(self):
+        return f"{self.student_name} reassigned from {self.previous_trainer_name} to {self.reassigned_trainer_name}"
 
 class SessionCompletionRequest ( models.Model ) :
     """Trainer requests counselor to mark sessions as complete"""

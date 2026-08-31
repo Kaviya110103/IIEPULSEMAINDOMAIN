@@ -602,6 +602,7 @@ export function EmployeeDashboard() {
     { label: 'My Students', value: data?.my_students_count, icon: 'fa-user-graduate', color: T.sage, bgColor: 'rgba(76,175,129,0.1)', to: '/employee/students' },
     { label: 'Materials', value: data?.materials_count, icon: 'fa-book', color: T.navy, bgColor: 'rgba(15,27,45,0.1)', to: '/employee/materials' },
     { label: 'My Graduates', value: data?.completed_students_count, icon: 'fa-graduation-cap', color: T.rose, bgColor: 'rgba(232,72,85,0.1)', to: '/employee/completed' },
+    { label: 'Reassigned Students', value: data?.reassigned_students_count, icon: 'fa-user-clock', color: T.amber, bgColor: 'rgba(244,169,64,0.1)', to: '/employee/reassigned-students' },
   ]
 
   return (
@@ -874,7 +875,7 @@ function AttendanceModal({ batch, onClose }) {
               <table className="employee-table">
                 <thead>
                   <tr>
-                    <th>Date</th><th>Student Name</th><th>Student ID</th><th>Batch</th><th>Status</th><th>Remarks</th>
+                    <th>Date</th><th>Student Name</th><th>Student ID</th><th>Batch</th><th>Trainer</th><th>Session</th><th>Status</th><th>Remarks</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -884,6 +885,8 @@ function AttendanceModal({ batch, onClose }) {
                       <td style={{ fontWeight: 500 }}>{r.student_name}</td>
                       <td>{r.student_id_display || '-'}</td>
                       <td>{r.batch_number}</td>
+                      <td>{r.marked_by || '-'}</td>
+                      <td>{r.session_number ? `Session ${r.session_number}: ${r.session_title || ''}` : '-'}</td>
                       <td>
                         <Badge text={r.status} variant={r.status === 'Present' ? 'success' : r.status === 'Late' ? 'warning' : 'danger'} />
                       </td>
@@ -1034,7 +1037,7 @@ export function AttendanceHistoryPage() {
             <table className="employee-table">
               <thead>
                 <tr>
-                  <th>Date</th><th>Student Name</th><th>Student ID</th><th>Batch</th><th>Status</th><th>Remarks</th>
+                  <th>Date</th><th>Student Name</th><th>Student ID</th><th>Batch</th><th>Trainer</th><th>Session</th><th>Status</th><th>Remarks</th>
                 </tr>
               </thead>
               <tbody>
@@ -1044,6 +1047,8 @@ export function AttendanceHistoryPage() {
                     <td style={{ fontWeight: 600 }}>{record.student_name}</td>
                     <td>{record.student_id_display || '-'}</td>
                     <td>{record.batch_number}</td>
+                    <td>{record.marked_by || '-'}</td>
+                    <td>{record.session_number ? `Session ${record.session_number}: ${record.session_title || ''}` : '-'}</td>
                     <td>
                       <Badge text={record.status} variant={record.status === 'Present' ? 'success' : record.status === 'Late' ? 'warning' : 'danger'} />
                     </td>
@@ -1547,6 +1552,10 @@ export function MarkAttendance() {
   const yesterdayValue = toLocalDateInputValue(yesterdayDate)
   const [batches, setBatches] = useState([])
   const [selectedBatch, setSelectedBatch] = useState('')
+  const [selectedTrainerId, setSelectedTrainerId] = useState('')
+  const [selectedSessionId, setSelectedSessionId] = useState('')
+  const [currentEmployeeId, setCurrentEmployeeId] = useState('')
+  const [sessions, setSessions] = useState([])
   const [students, setStudents] = useState([])
   const [attendance, setAttendance] = useState({})
   const [date, setDate] = useState(todayValue)
@@ -1555,6 +1564,10 @@ export function MarkAttendance() {
   const navigate = useNavigate()
 
   useEffect(() => {
+    api.get('/dashboard/employee/').then(r => {
+      const employee = r.data?.employee
+      if (employee?.id) setCurrentEmployeeId(String(employee.id))
+    }).catch(() => {})
     api.get('/batches/').then(r => {
       const b = r.data.results || r.data
       setBatches(b)
@@ -1563,6 +1576,29 @@ export function MarkAttendance() {
       if (bid) setSelectedBatch(bid)
     })
   }, [])
+
+  const selectedBatchDetails = batches.find(b => String(b.id) === String(selectedBatch))
+  const selectedBatchTrainers = selectedBatchDetails?.trainers?.length
+    ? selectedBatchDetails.trainers
+    : selectedBatchDetails?.trainer_ids?.length
+      ? selectedBatchDetails.trainer_ids.map((id, index) => ({ id, name: selectedBatchDetails.trainer_names?.[index] || `Trainer ${index + 1}` }))
+      : []
+
+  useEffect(() => {
+    if (!selectedBatchDetails) {
+      setSelectedTrainerId('')
+      setSelectedSessionId('')
+      setSessions([])
+      return
+    }
+    const trainerIds = selectedBatchTrainers.map(t => String(t.id))
+    const ownTrainerId = trainerIds.includes(String(currentEmployeeId)) ? String(currentEmployeeId) : ''
+    setSelectedTrainerId(prev => trainerIds.includes(String(prev)) ? String(prev) : (ownTrainerId || trainerIds[0] || ''))
+    setSelectedSessionId('')
+    api.get(`/batches/${selectedBatch}/sessions-logsheet/`)
+      .then(r => setSessions(r.data?.sessions || []))
+      .catch(() => setSessions([]))
+  }, [selectedBatch, currentEmployeeId, batches])
 
   useEffect(() => {
     if (!selectedBatch) return setStudents([])
@@ -1577,12 +1613,19 @@ export function MarkAttendance() {
 
   const submit = async () => {
     if (!selectedBatch) return toast.error('Select a batch first')
+    if (!selectedTrainerId) return toast.error('Select a trainer section')
     if (students.length === 0) return toast.error('No students in this batch')
     if (![todayValue, yesterdayValue].includes(date)) return toast.error('Attendance can be marked only for today or yesterday')
     setSaving(true)
     try {
       const data = Object.entries(attendance).map(([student_id, status]) => ({ student_id: parseInt(student_id), status }))
-      const res = await api.post('/attendance/mark/', { batch_id: parseInt(selectedBatch), date, attendance: data })
+      const res = await api.post('/attendance/mark/', {
+        batch_id: parseInt(selectedBatch),
+        trainer_id: parseInt(selectedTrainerId),
+        session_id: selectedSessionId ? parseInt(selectedSessionId) : null,
+        date,
+        attendance: data
+      })
       const alertCount = Number(res.data?.leave_alerts || 0)
       toast.success(alertCount > 0 ? `Attendance saved. ${alertCount} leave alerts sent.` : 'Attendance saved successfully!')
     } catch (err) {
@@ -1625,6 +1668,49 @@ export function MarkAttendance() {
               </select>
             </div>
           </div>
+
+          {selectedBatchTrainers.length > 0 && (
+            <div style={{ marginBottom: 20 }}>
+              <label className="employee-label">Trainer Section</label>
+              <div style={{ display: 'inline-flex', flexWrap: 'wrap', gap: 6, padding: 5, border: `1px solid ${T.border}`, borderRadius: 12, background: T.white }}>
+                {selectedBatchTrainers.map(trainer => {
+                  const active = String(selectedTrainerId) === String(trainer.id)
+                  return (
+                    <button
+                      key={trainer.id}
+                      type="button"
+                      onClick={() => setSelectedTrainerId(String(trainer.id))}
+                      style={{
+                        border: 'none',
+                        borderRadius: 9,
+                        padding: '8px 13px',
+                        cursor: 'pointer',
+                        background: active ? T.amber : 'transparent',
+                        color: active ? T.navy : T.slate,
+                        fontWeight: 700,
+                      }}
+                    >
+                      {trainer.name || `Trainer ${trainer.id}`}
+                    </button>
+                  )
+                })}
+              </div>
+            </div>
+          )}
+
+          {sessions.length > 0 && (
+            <div className="employee-fg" style={{ marginBottom: 24 }}>
+              <label className="employee-label">Session / Module</label>
+              <select className="employee-select" value={selectedSessionId} onChange={e => setSelectedSessionId(e.target.value)}>
+                <option value="">General batch attendance</option>
+                {sessions.map(session => (
+                  <option key={session.id} value={session.id}>
+                    Session {session.session_number} - {session.title || 'Untitled'}
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
 
           {loading ? <Spin /> : students.length === 0 && selectedBatch ? (
             <Empty msg="No students in this batch" icon="fa-user-graduate" />
@@ -2545,6 +2631,7 @@ export function StaffCompletedStudents() {
   const [filteredStudents, setFilteredStudents] = useState([])
   const [loading, setLoading] = useState(true)
   const [currentPage, setCurrentPage] = useState(1)
+  const [downloadingPdf, setDownloadingPdf] = useState(false)
   const itemsPerPage = 10
 
   // Filter states
@@ -2590,20 +2677,6 @@ export function StaffCompletedStudents() {
     }
   }
 
-  // Function to fetch test scores for a student
-  const fetchStudentTestScores = async (studentId) => {
-    try {
-      const response = await api.get(`/test-results/?student=${studentId}`)
-      const results = response.data.results || response.data || []
-      if (results.length === 0) return 0
-      const totalPercentage = results.reduce((sum, t) => sum + (t.percentage || 0), 0)
-      return Math.round(totalPercentage / results.length)
-    } catch (err) {
-      console.error(`Error fetching test scores for student ${studentId}:`, err)
-      return 0
-    }
-  }
-
   const loadCompletedStudents = async () => {
     setLoading(true)
     try {
@@ -2613,17 +2686,24 @@ export function StaffCompletedStudents() {
       // Fetch attendance and test scores for each student
       const studentsWithData = await Promise.all(
         data.map(async (student) => {
-          const [attendance, avgScore] = await Promise.all([
-            fetchStudentAttendance(student.id),
-            fetchStudentTestScores(student.id)
-          ])
+          const originalStudentId = student.original_student_db_id || (
+            String(student.original_student_id || '').match(/^\d+$/) ? student.original_student_id : null
+          )
+          const storedAttendance = Number(student.attendance_percentage || 0)
+          const needsAttendanceLookup = originalStudentId && !storedAttendance
+          const attendance = needsAttendanceLookup
+            ? await fetchStudentAttendance(originalStudentId)
+            : {
+                attendance_percentage: storedAttendance,
+                present_count: student.present_count || 0,
+                total_attendance: student.total_attendance || 0
+              }
 
           return {
             ...student,
-            attendance_percentage: attendance.attendance_percentage,
+            attendance_percentage: attendance.attendance_percentage ?? storedAttendance,
             present_count: attendance.present_count,
-            total_attendance: attendance.total_attendance,
-            average_test_score: avgScore
+            total_attendance: attendance.total_attendance
           }
         })
       )
@@ -2690,6 +2770,19 @@ export function StaffCompletedStudents() {
     const resetFilters = { batch: '', course: '', dateFrom: '', dateTo: '', search: '' }
     setFilters(resetFilters)
     applyFilters(students, resetFilters)
+  }
+
+  const downloadGraduatesPdf = async () => {
+    setDownloadingPdf(true)
+    try {
+      await downloadPdf('/completed-students/report/', filters, 'my_graduates_report.pdf')
+      toast.success('Graduates PDF downloaded')
+    } catch (err) {
+      console.error('Graduates PDF error:', err)
+      toast.error(err.response?.data?.error || 'Failed to download graduates PDF')
+    } finally {
+      setDownloadingPdf(false)
+    }
   }
 
   const downloadReport = async (studentId, studentName) => {
@@ -2801,7 +2894,17 @@ export function StaffCompletedStudents() {
           <h5 style={{ color: 'white', margin: 0 }}>
             <i className="fas fa-graduation-cap" style={{ marginRight: 8 }} /> My Graduated Students
           </h5>
-          <Badge text={`${filteredStudents.length} Records`} variant="success" />
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+            <Badge text={`${filteredStudents.length} Records`} variant="success" />
+            <button
+              className="employee-btn employee-btn-sm"
+              onClick={downloadGraduatesPdf}
+              disabled={downloadingPdf || filteredStudents.length === 0}
+              style={{ background: '#fff', color: T.sage, border: '1px solid rgba(255,255,255,0.55)', padding: '6px 12px', fontSize: 12 }}
+            >
+              <i className={`fas ${downloadingPdf ? 'fa-spinner fa-spin' : 'fa-file-pdf'}`} /> PDF
+            </button>
+          </div>
         </div>
 
         {filteredStudents.length === 0 ? (
@@ -2879,7 +2982,6 @@ export function StaffCompletedStudents() {
                     <th style={{ padding: '10px 8px', color: 'black', fontSize: '11px', fontWeight: 600, textAlign: 'center', width: '60px' }}>Duration</th>
                     <th style={{ padding: '10px 8px', color: 'black', fontSize: '11px', fontWeight: 600, textAlign: 'center', width: '80px' }}>Completed</th>
                     <th style={{ padding: '10px 8px', color: 'black', fontSize: '11px', fontWeight: 600, textAlign: 'center', width: '100px' }}>Attendance</th>
-                    <th style={{ padding: '10px 8px', color: 'black', fontSize: '11px', fontWeight: 600, textAlign: 'center', width: '60px' }}>Avg Score</th>
                     <th style={{ padding: '10px 8px', color: 'black', fontSize: '11px', fontWeight: 600, textAlign: 'center', width: '70px' }}>Report</th>
                   </tr>
                 </thead>
@@ -2887,7 +2989,6 @@ export function StaffCompletedStudents() {
                   {paginatedStudents.map((x, idx) => {
                     const globalIndex = (currentPage - 1) * itemsPerPage + idx + 1
                     const attendancePercentage = x.attendance_percentage || 0
-                    const avgScore = x.average_test_score || 0
                     const completedSessions = x.completed_sessions_count || x.sessions_completed || 0
                     const totalSessions = x.total_sessions_count || x.total_sessions || 0
                     const sessionPercentage = getSessionPercentage(completedSessions, totalSessions)
@@ -2942,7 +3043,7 @@ export function StaffCompletedStudents() {
 
                         {/* ATTENDANCE COLUMN - Enhanced with detailed view */}
                         <td style={{ padding: '10px 8px', fontSize: '11px', textAlign: 'center' }}>
-                          {attendancePercentage > 0 ? (
+                          {attendancePercentage > 0 || x.total_attendance > 0 ? (
                             <div>
                               <div style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', marginBottom: '4px' }}>
                                 <div style={{ width: '60px', background: '#e9ecef', borderRadius: '4px', height: '6px' }}>
@@ -2958,20 +3059,12 @@ export function StaffCompletedStudents() {
                                 </span>
                               </div>
                               <div style={{ fontSize: '9px', color: T.slate }}>
-                                ({x.present_count || 0}/{x.total_attendance || 0} days)
+                                {x.total_attendance ? `(${x.present_count || 0}/${x.total_attendance || 0} days)` : 'Overall attendance'}
                               </div>
                             </div>
                           ) : (
                             <Badge text="Not Marked" variant="warning" />
                           )}
-                        </td>
-
-                        {/* Average Score Column */}
-                        <td style={{ padding: '10px 8px', fontSize: '11px', textAlign: 'center' }}>
-                          <Badge
-                            text={`${avgScore}%`}
-                            variant={avgScore >= 70 ? 'success' : avgScore >= 50 ? 'warning' : 'danger'}
-                          />
                         </td>
 
                         {/* Report Download Button */}
@@ -3040,6 +3133,321 @@ export function StaffCompletedStudents() {
           </>
         )}
       </div>
+    </div>
+  )
+}
+
+
+
+export function ReassignedStudents() {
+  const [records, setRecords] = useState([])
+  const [loading, setLoading] = useState(true)
+  const [report, setReport] = useState(null)
+  const [reportLoading, setReportLoading] = useState(false)
+
+  const formatDateTime = (value) => {
+    if (!value) return '-'
+    const date = new Date(value)
+    if (Number.isNaN(date.getTime())) return '-'
+    return date.toLocaleString('en-IN', {
+      day: '2-digit',
+      month: 'short',
+      year: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+    })
+  }
+
+  const loadRecords = async () => {
+    setLoading(true)
+    try {
+      const response = await api.get('/staff/reassigned-students/')
+      setRecords(response.data.results || response.data || [])
+    } catch (err) {
+      toast.error(err.response?.data?.error || 'Failed to load reassigned students')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  useEffect(() => {
+    loadRecords()
+  }, [])
+
+  const openReport = async (record) => {
+    setReportLoading(true)
+    try {
+      const response = await api.get(`/staff/reassigned-students/${record.id}/report/`)
+      setReport(response.data)
+    } catch (err) {
+      toast.error(err.response?.data?.error || 'Failed to load completion report')
+    } finally {
+      setReportLoading(false)
+    }
+  }
+
+  const downloadReportPdf = async () => {
+    if (!report?.id) return
+    try {
+      const response = await api.get(`/staff/reassigned-students/${report.id}/report/pdf/`, { responseType: 'blob' })
+      const url = window.URL.createObjectURL(new Blob([response.data], { type: 'application/pdf' }))
+      const link = document.createElement('a')
+      link.href = url
+      link.download = `${(report.student_name || 'student').replace(/\s+/g, '_')}_Reassigned_Completion_Report.pdf`
+      document.body.appendChild(link)
+      link.click()
+      link.remove()
+      window.URL.revokeObjectURL(url)
+    } catch (err) {
+      toast.error(err.response?.data?.error || 'Failed to download report')
+    }
+  }
+
+  if (loading) {
+    return (
+      <div className="employee-root">
+        <Styles />
+        <Spin />
+      </div>
+    )
+  }
+
+  return (
+    <div className="employee-root">
+      <Styles />
+      <PH title="Reassigned Students" sub="Students moved from your batch to another trainer with preserved progress and attendance history." />
+
+      <div className="employee-card">
+        <SH title="Reassigned Students" count={records.length} />
+        {records.length === 0 ? (
+          <Empty msg="No reassigned students found" icon="fa-user-clock" />
+        ) : (
+          <div style={{ overflowX: 'auto' }}>
+            <table className="employee-table">
+              <thead>
+                <tr>
+                  <th>Student</th>
+                  <th>Course</th>
+                  <th>Batch</th>
+                  <th>Reassigned To</th>
+                  <th>Reassigned Date</th>
+                  <th>Progress</th>
+                  <th>Attendance</th>
+                  <th>Report</th>
+                </tr>
+              </thead>
+              <tbody>
+                {records.map(record => (
+                  <tr key={record.id}>
+                    <td>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                        <Avatar name={record.student_name} size={34} />
+                        <div>
+                          <strong>{record.student_name || '-'}</strong>
+                          <div style={{ color: T.slate, fontSize: 12 }}>{record.student_id || '-'}</div>
+                        </div>
+                      </div>
+                    </td>
+                    <td>{record.course_name || '-'}</td>
+                    <td>
+                      <Badge text={record.batch_number || '-'} variant="primary" />
+                      {record.target_batch_number && (
+                        <div style={{ color: T.slate, fontSize: 12, marginTop: 4 }}>
+                          To {record.target_batch_number}
+                        </div>
+                      )}
+                    </td>
+                    <td>{record.reassigned_trainer || '-'}</td>
+                    <td>{formatDateTime(record.reassigned_at)}</td>
+                    <td>
+                      <strong>{record.completed_sessions || 0}/{record.total_sessions || 0}</strong>
+                      <div style={{ color: T.slate, fontSize: 12 }}>{record.progress_percentage || 0}% complete</div>
+                    </td>
+                    <td>
+                      <strong>{record.attendance_percentage || 0}%</strong>
+                      <div style={{ color: T.slate, fontSize: 12 }}>
+                        {record.present_days || 0} present, {record.absent_days || 0} absent
+                      </div>
+                    </td>
+                    <td>
+                      <button
+                        className="employee-btn employee-btn-sm employee-btn-primary"
+                        onClick={() => openReport(record)}
+                        disabled={reportLoading}
+                      >
+                        <i className="fas fa-file-alt" /> View
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
+      <Modal open={!!report} onClose={() => setReport(null)} title="Completion Report" size="xl">
+        {report && (
+          <div>
+            <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 14 }}>
+              <button className="employee-btn employee-btn-primary" type="button" onClick={downloadReportPdf}>
+                <i className="fas fa-file-pdf" /> Download PDF
+              </button>
+            </div>
+
+            <div style={{ display: 'grid', gridTemplateColumns: '1.1fr .9fr', gap: 18, marginBottom: 20 }}>
+              <div className="employee-card" style={{ boxShadow: 'none', padding: 18 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
+                  <Avatar name={report.student_name} size={48} />
+                  <div>
+                    <h4 style={{ margin: 0 }}>{report.student_name || '-'}</h4>
+                    <div style={{ color: T.slate, fontSize: 13 }}>
+                      {report.student_id || '-'} - {report.course_name || '-'}
+                    </div>
+                  </div>
+                </div>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 10, marginTop: 16, color: T.slate, fontSize: 13 }}>
+                  <div><strong style={{ color: T.navy }}>Source Batch:</strong> {report.batch_number || '-'}</div>
+                  <div><strong style={{ color: T.navy }}>Target Batch:</strong> {report.target_batch_number || '-'}</div>
+                  <div><strong style={{ color: T.navy }}>Previous Trainer:</strong> {report.previous_trainer || '-'}</div>
+                  <div><strong style={{ color: T.navy }}>New Trainer:</strong> {report.reassigned_trainer || '-'}</div>
+                  <div><strong style={{ color: T.navy }}>Reassigned:</strong> {formatDateTime(report.reassigned_at)}</div>
+                  <div><strong style={{ color: T.navy }}>Reason:</strong> {report.reassignment_reason || '-'}</div>
+                </div>
+              </div>
+
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 12 }}>
+                <div className="employee-card" style={{ boxShadow: 'none', padding: 16 }}>
+                  <div style={{ color: T.slate, fontSize: 12 }}>Sessions Completed</div>
+                  <div style={{ fontSize: 24, fontWeight: 800 }}>{report.completed_sessions || 0}/{report.total_sessions || 0}</div>
+                  <Badge text={`${report.progress_percentage || 0}%`} variant="success" />
+                </div>
+                <div className="employee-card" style={{ boxShadow: 'none', padding: 16 }}>
+                  <div style={{ color: T.slate, fontSize: 12 }}>Attendance</div>
+                  <div style={{ fontSize: 24, fontWeight: 800 }}>{report.attendance_percentage || 0}%</div>
+                  <Badge text={`${report.present_days || 0} Present`} variant="info" />
+                </div>
+                <div className="employee-card" style={{ boxShadow: 'none', padding: 16 }}>
+                  <div style={{ color: T.slate, fontSize: 12 }}>Present Days</div>
+                  <div style={{ fontSize: 24, fontWeight: 800 }}>{report.present_days || 0}</div>
+                </div>
+                <div className="employee-card" style={{ boxShadow: 'none', padding: 16 }}>
+                  <div style={{ color: T.slate, fontSize: 12 }}>Absent Days</div>
+                  <div style={{ fontSize: 24, fontWeight: 800 }}>{report.absent_days || 0}</div>
+                </div>
+                <div className="employee-card" style={{ boxShadow: 'none', padding: 16 }}>
+                  <div style={{ color: T.slate, fontSize: 12 }}>Test Result</div>
+                  <div style={{ fontSize: 24, fontWeight: 800 }}>{report.average_test_percentage || 0}%</div>
+                  <Badge text={`${report.test_results_count || 0} Tests`} variant="primary" />
+                </div>
+                <div className="employee-card" style={{ boxShadow: 'none', padding: 16 }}>
+                  <div style={{ color: T.slate, fontSize: 12 }}>Materials Uploaded</div>
+                  <div style={{ fontSize: 24, fontWeight: 800 }}>{report.material_uploads_count || 0}</div>
+                  <Badge text="Shared before reassignment" variant="info" />
+                </div>
+              </div>
+            </div>
+
+            <div className="employee-card" style={{ boxShadow: 'none', marginBottom: 18 }}>
+              <SH title="Completed Sessions" count={(report.completed_session_details || []).length} />
+              {(report.completed_session_details || []).length === 0 ? (
+                <Empty msg="No completed sessions recorded" icon="fa-list-check" />
+              ) : (
+                <div style={{ display: 'grid', gap: 10 }}>
+                  {(report.completed_session_details || []).map((session, index) => (
+                    <div
+                      key={`${session.session_number}-${index}`}
+                      style={{
+                        border: `1px solid ${T.border}`,
+                        borderRadius: 8,
+                        padding: 14,
+                        background: '#fff',
+                        lineHeight: 1.55,
+                      }}
+                    >
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 6 }}>
+                        <Badge text={`Session ${session.session_number || index + 1}`} variant="primary" />
+                        <strong style={{ color: T.navy }}>{session.title || 'Untitled session'}</strong>
+                      </div>
+                      <p style={{ margin: 0, color: T.slate, whiteSpace: 'pre-wrap' }}>{session.topics || '-'}</p>
+                      <div style={{ marginTop: 8, fontSize: 12, color: T.slate }}>
+                        Completed: {session.staff_completed_at ? formatDateTime(session.staff_completed_at) : (session.completed_date || '-')}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <div className="employee-card" style={{ boxShadow: 'none', marginBottom: 18 }}>
+              <SH title="Attendance Summary" count={(report.attendance_summary || []).length} />
+              {(report.attendance_summary || []).length === 0 ? (
+                <Empty msg="No attendance history recorded" icon="fa-clipboard-list" />
+              ) : (
+                <div style={{ overflowX: 'auto' }}>
+                  <table className="employee-table">
+                    <thead>
+                      <tr>
+                        <th>Date</th>
+                        <th>Status</th>
+                        <th>Batch</th>
+                        <th>Marked By</th>
+                        <th>Remarks</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {(report.attendance_summary || []).map((attendance, index) => (
+                        <tr key={`${attendance.date}-${index}`}>
+                          <td>{attendance.date || '-'}</td>
+                          <td>
+                            <Badge
+                              text={attendance.status || '-'}
+                              variant={(attendance.status || '').toLowerCase() === 'present' ? 'success' : 'danger'}
+                            />
+                          </td>
+                          <td>{attendance.batch_number || '-'}</td>
+                          <td>{attendance.marked_by || '-'}</td>
+                          <td>{attendance.remarks || '-'}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+
+            <div className="employee-card" style={{ boxShadow: 'none' }}>
+              <SH title="Test Results" count={(report.test_results || []).length} />
+              {(report.test_results || []).length === 0 ? (
+                <Empty msg="No test results recorded" icon="fa-file-alt" />
+              ) : (
+                <div style={{ overflowX: 'auto' }}>
+                  <table className="employee-table">
+                    <thead>
+                      <tr>
+                        <th>Test</th>
+                        <th>Score</th>
+                        <th>Percentage</th>
+                        <th>Submitted</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {(report.test_results || []).map((test, index) => (
+                        <tr key={`${test.test_name}-${index}`}>
+                          <td>{test.test_name || '-'}</td>
+                          <td>{test.score || 0}/{test.total_questions || 0}</td>
+                          <td>{test.percentage || 0}%</td>
+                          <td>{test.submitted_at ? formatDateTime(test.submitted_at) : '-'}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+      </Modal>
     </div>
   )
 }
@@ -4622,6 +5030,7 @@ export function ManageQuizzes() {
   const [loading, setLoading] = useState(true)
   const [batches, setBatches] = useState([])
   const [selectedQuiz, setSelectedQuiz] = useState(null)
+  const [detailQuiz, setDetailQuiz] = useState(null)
   const [selectedBatchIds, setSelectedBatchIds] = useState([])
   const [assigning, setAssigning] = useState(false)
 
@@ -4752,6 +5161,13 @@ export function ManageQuizzes() {
                     <td>
                       <div style={{ display: 'flex', gap: 8 }}>
                         <button
+                          className="employee-btn employee-btn-sm employee-btn-ghost"
+                          onClick={() => setDetailQuiz(quiz)}
+                          title="View complete quiz details"
+                        >
+                          <i className="fas fa-eye" /> View
+                        </button>
+                        <button
                           className="employee-btn employee-btn-sm employee-btn-primary"
                           onClick={() => openAssignModal(quiz)}
                           title="Assign quiz to batches"
@@ -4819,6 +5235,55 @@ export function ManageQuizzes() {
           </div>
         </Modal>
       )}
+
+      <Modal open={!!detailQuiz} onClose={() => setDetailQuiz(null)} title="Quiz Details" size="xl">
+        {detailQuiz && (
+          <div>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 12, marginBottom: 18 }}>
+              <div className="employee-card" style={{ boxShadow: 'none', padding: 14 }}><strong>Title</strong><div>{detailQuiz.title}</div></div>
+              <div className="employee-card" style={{ boxShadow: 'none', padding: 14 }}><strong>Batch</strong><div>{detailQuiz.batch_number || 'Not assigned'}</div></div>
+              <div className="employee-card" style={{ boxShadow: 'none', padding: 14 }}><strong>Questions</strong><div>{detailQuiz.total_questions || 0}</div></div>
+              <div className="employee-card" style={{ boxShadow: 'none', padding: 14 }}><strong>Marks</strong><div>{detailQuiz.total_marks || 0}</div></div>
+              <div className="employee-card" style={{ boxShadow: 'none', padding: 14 }}><strong>Duration</strong><div>{detailQuiz.duration_minutes || 0} min</div></div>
+              <div className="employee-card" style={{ boxShadow: 'none', padding: 14 }}><strong>Status</strong><div><Badge text={detailQuiz.is_published ? 'Active' : 'Draft'} variant={detailQuiz.is_published ? 'success' : 'warning'} /></div></div>
+            </div>
+            {detailQuiz.description && (
+              <div style={{ background: T.white, border: `1px solid ${T.border}`, borderRadius: 10, padding: 14, marginBottom: 18 }}>
+                {detailQuiz.description}
+              </div>
+            )}
+            <div style={{ overflowX: 'auto' }}>
+              <table className="employee-table">
+                <thead>
+                  <tr>
+                    <th>#</th>
+                    <th>Question</th>
+                    <th>Options</th>
+                    <th>Correct</th>
+                    <th>Marks</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {(detailQuiz.questions || []).map(question => (
+                    <tr key={question.id}>
+                      <td>{question.question_number}</td>
+                      <td style={{ minWidth: 220 }}>{question.question_text}</td>
+                      <td style={{ minWidth: 260 }}>
+                        <div>A. {question.option_a || '-'}</div>
+                        <div>B. {question.option_b || '-'}</div>
+                        {question.option_c && <div>C. {question.option_c}</div>}
+                        {question.option_d && <div>D. {question.option_d}</div>}
+                      </td>
+                      <td><Badge text={question.correct_answer || '-'} variant="success" /></td>
+                      <td>{question.marks || 0}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+      </Modal>
     </div>
   )
 }
