@@ -35,13 +35,23 @@ const parseCourseDuration = (duration) => {
 }
 
 const formatDateInput = (date) => {
-  const year = date.getFullYear()
+  if (!(date instanceof Date) || Number.isNaN(date.getTime())) return ''
+  const year = String(date.getFullYear()).padStart(4, '0')
+  if (!/^\d{4}$/.test(year) || Number(year) < 1000) return ''
   const month = String(date.getMonth() + 1).padStart(2, '0')
   const day = String(date.getDate()).padStart(2, '0')
   return `${year}-${month}-${day}`
 }
 
+const isValidDateInput = (value) => {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(value || ''))) return false
+  const [year, month, day] = value.split('-').map(Number)
+  const date = new Date(year, month - 1, day)
+  return date.getFullYear() === year && date.getMonth() === month - 1 && date.getDate() === day
+}
+
 const addCalendarMonths = (startDate, months) => {
+  if (!isValidDateInput(startDate)) return ''
   const [year, month, day] = startDate.split('-').map(Number)
   const targetMonthIndex = month - 1 + months
   const targetYear = year + Math.floor(targetMonthIndex / 12)
@@ -52,6 +62,7 @@ const addCalendarMonths = (startDate, months) => {
 
 const calculateBatchEndDate = (duration, startDate) => {
   if (!startDate) return { endDate: '', error: '' }
+  if (!isValidDateInput(startDate)) return { endDate: '', error: 'Enter a valid start date in YYYY-MM-DD format.' }
   const parsed = parseCourseDuration(duration)
   if (parsed.error) return { endDate: '', error: parsed.error }
 
@@ -62,7 +73,8 @@ const calculateBatchEndDate = (duration, startDate) => {
   const [year, month, day] = startDate.split('-').map(Number)
   const date = new Date(year, month - 1, day)
   date.setDate(date.getDate() + parsed.amount)
-  return { endDate: formatDateInput(date), error: '' }
+  const endDate = formatDateInput(date)
+  return { endDate, error: endDate ? '' : 'Calculated end date is invalid.' }
 }
 
 const css = `
@@ -802,7 +814,7 @@ export function StudentsList({ adminView = true }) {
 
       {/* Forms - only show for counselor */}
       {canAdd && showForm && <StudentForm item={editItem} courses={courses} counselorBranch={isCounselor ? user?.branch : null} onClose={() => setShowForm(false)} onSaved={() => { setShowForm(false); load() }} />}
-      {canAssign && assignModal && (<AssignModal
+      {canAssign && assignModal && (<AssignModalV2
         student={assignModal}
         counselorBranch={user?.branch}
         onClose={() => setAssignModal(null)}
@@ -906,7 +918,13 @@ function StudentForm({ item, courses, counselorBranch, onClose, onSaved }) {
       courseIds.forEach(id => fd.append('course_ids', id))
       if (photo) fd.append('photo', photo)
       if (isEdit) { await api.patch(`/students/${item.id}/`, fd); toast.success('Student updated!') }
-      else { const r = await api.post('/students/create/', fd); toast.success(r.data.message || 'Student added!') }
+      else {
+        const r = await api.post('/students/create/', fd)
+        toast.success(r.data.message || 'Student added!')
+        if (r.data.email_status !== 'queued') {
+          toast.error(r.data.email_error || 'Student created, but welcome email was not sent. Check email configuration.')
+        }
+      }
       onSaved()
     } catch (err) {
       const d = err.response?.data || {}
@@ -993,6 +1011,411 @@ function StudentForm({ item, courses, counselorBranch, onClose, onSaved }) {
 }
 
 
+function AssignModalV2({ student, counselorBranch, onClose, onSaved }) {
+  const [emps, setEmps] = useState([])
+  const [courses, setCourses] = useState([])
+  const [courseTypes, setCourseTypes] = useState([])
+  const [assignments, setAssignments] = useState({})
+  const [saving, setSaving] = useState(false)
+  const enrolledCourses = student.enrolled_courses || []
+
+  const timings = [
+    'Morning (10:00 AM - 11:00 AM)',
+    'Morning (11:00 AM - 12:00 PM)',
+    'Afternoon (12:00 PM - 1:00 PM)',
+    'Afternoon (1:00 PM - 2:00 PM)',
+    'Evening (3:00 PM - 4:00 PM)',
+    'Evening (4:00 PM - 5:00 PM)',
+    'Evening (5:00 PM - 6:00 PM)',
+    'Evening (6:00 PM - 7:00 PM)',
+    'Saturday (10:00 AM - 2:00 PM)',
+    'Saturday (3:00 PM - 5:00 PM)',
+    'Sunday (10:00 AM - 2:00 PM)',
+  ]
+
+  const initialSection = (course) => ({
+    staffIds: [],
+    staffBatches: {},
+    batchByStaff: {},
+    staffTimings: {},
+    loadingBatches: false,
+    loadingBatchNumber: false,
+    error: '',
+    createForm: {
+      batch_number: '',
+      course_type: course.course_type || '',
+      course_name: String(course.course_id || ''),
+      start_date: '',
+      end_date: '',
+    },
+  })
+
+  const setCourseSection = (courseId, updater) => {
+    setAssignments(prev => {
+      const current = prev[courseId] || initialSection(enrolledCourses.find(c => String(c.course_id) === String(courseId)) || {})
+      return {
+        ...prev,
+        [courseId]: typeof updater === 'function' ? updater(current) : { ...current, ...updater },
+      }
+    })
+  }
+
+  const courseDetails = (course) => {
+    return courses.find(item => String(item.id) === String(course.course_id)) || course
+  }
+
+  const updateCreateForm = (course, patch) => {
+    const courseId = String(course.course_id)
+    const detail = courseDetails(course)
+    setCourseSection(courseId, section => {
+      const nextForm = {
+        ...section.createForm,
+        course_name: courseId,
+        course_type: detail.course_type || section.createForm.course_type || '',
+        ...patch,
+      }
+      let error = section.error
+      if (Object.prototype.hasOwnProperty.call(patch, 'start_date')) {
+        const calculated = calculateBatchEndDate(detail.duration, nextForm.start_date)
+        nextForm.end_date = calculated.endDate
+        error = calculated.error
+      }
+      return { ...section, createForm: nextForm, error }
+    })
+  }
+
+  const loadStaffBatches = async (courseId, staffIds) => {
+    if (!staffIds.length) {
+      setCourseSection(courseId, { staffBatches: {}, batchByStaff: {}, loadingBatches: false })
+      return
+    }
+    setCourseSection(courseId, { loadingBatches: true })
+    const entries = await Promise.all(staffIds.map(id =>
+      api.get(`/trainer-batches/${id}/`)
+        .then(r => [String(id), r.data.results || r.data || []])
+        .catch(() => api.get(`/batches/?faculty=${id}`).then(r => [String(id), r.data.results || r.data || []]).catch(() => [String(id), []]))
+    ))
+    const staffBatches = {}
+    entries.forEach(([id, list]) => { staffBatches[id] = list })
+    setCourseSection(courseId, section => {
+      const batchByStaff = {}
+      staffIds.forEach(id => {
+        if (section.batchByStaff[id]) batchByStaff[id] = section.batchByStaff[id]
+      })
+      return { ...section, staffBatches, batchByStaff, loadingBatches: false }
+    })
+  }
+
+  const ensureBatchNumber = async (courseId) => {
+    const section = assignments[courseId]
+    if (section?.createForm?.batch_number || !counselorBranch) return section?.createForm?.batch_number || ''
+    setCourseSection(courseId, { loadingBatchNumber: true })
+    try {
+      const res = await api.get(`/generate/batch-number/?branch=${counselorBranch}`)
+      const batchNumber = res.data.batch_number || ''
+      setCourseSection(courseId, section => ({
+        ...section,
+        loadingBatchNumber: false,
+        createForm: { ...section.createForm, batch_number: batchNumber },
+      }))
+      return batchNumber
+    } catch {
+      setCourseSection(courseId, { loadingBatchNumber: false })
+      return ''
+    }
+  }
+
+  const toggleStaff = async (course, staffId) => {
+    const courseId = String(course.course_id)
+    const id = String(staffId)
+    const section = assignments[courseId] || initialSection(course)
+    const staffIds = section.staffIds.includes(id)
+      ? section.staffIds.filter(item => item !== id)
+      : [...section.staffIds, id]
+    const staffTimings = { ...section.staffTimings }
+    const batchByStaff = { ...section.batchByStaff }
+    if (section.staffIds.includes(id)) {
+      delete staffTimings[id]
+      delete batchByStaff[id]
+    }
+    setCourseSection(courseId, { staffIds, staffTimings, batchByStaff, error: '' })
+    if (staffIds.length > 1) await ensureBatchNumber(courseId)
+    await loadStaffBatches(courseId, staffIds)
+  }
+
+  useEffect(() => {
+    const url = counselorBranch ? `/employees/?branch=${counselorBranch}` : '/employees/'
+    api.get(url).then(r => {
+      const all = r.data.results || r.data || []
+      setEmps(all.filter(e => ['trainer', 'mentor'].includes(e.designation?.toLowerCase())))
+    }).catch(() => setEmps([]))
+    api.get('/courses/').then(r => setCourses(r.data.results || r.data || [])).catch(() => setCourses([]))
+    api.get('/course-types/').then(r => setCourseTypes(r.data.results || r.data || [])).catch(() => setCourseTypes([]))
+  }, [counselorBranch])
+
+  useEffect(() => {
+    setAssignments(prev => {
+      const next = { ...prev }
+      enrolledCourses.forEach(course => {
+        const courseId = String(course.course_id)
+        if (!next[courseId]) next[courseId] = initialSection(course)
+      })
+      Object.keys(next).forEach(courseId => {
+        if (!enrolledCourses.some(course => String(course.course_id) === courseId)) delete next[courseId]
+      })
+      return next
+    })
+  }, [student.id, student.student_id, enrolledCourses.length])
+
+  useEffect(() => {
+    enrolledCourses.forEach(course => {
+      const courseId = String(course.course_id)
+      const section = assignments[courseId]
+      if (!section) return
+      const detail = courseDetails(course)
+      if (section.createForm.course_type !== (detail.course_type || section.createForm.course_type)) {
+        setCourseSection(courseId, current => ({
+          ...current,
+          createForm: {
+            ...current.createForm,
+            course_name: courseId,
+            course_type: detail.course_type || current.createForm.course_type || '',
+          },
+        }))
+      }
+    })
+  }, [courses.length])
+
+  const selectedAssignmentCourses = () => enrolledCourses.filter(course => {
+    const section = assignments[String(course.course_id)]
+    return section?.staffIds?.length > 0
+  })
+
+  const validateAll = (coursesToSubmit) => {
+    const nextErrors = {}
+    coursesToSubmit.forEach(course => {
+      const courseId = String(course.course_id)
+      const section = assignments[courseId] || initialSection(course)
+      if (section.staffIds.length === 1) {
+        const id = section.staffIds[0]
+        if (!section.batchByStaff[id]) nextErrors[courseId] = 'Select an existing batch for the selected staff.'
+      } else {
+        const missingTiming = section.staffIds.find(id => !section.staffTimings[id])
+        if (missingTiming) nextErrors[courseId] = 'Select timing for every selected staff.'
+        else if (!section.createForm.start_date) nextErrors[courseId] = 'Select batch start date.'
+        else if (!section.createForm.end_date || section.error) nextErrors[courseId] = section.error || 'Selected course duration is invalid.'
+      }
+    })
+    if (Object.keys(nextErrors).length) {
+      setAssignments(prev => {
+        const next = { ...prev }
+        Object.entries(nextErrors).forEach(([courseId, error]) => {
+          next[courseId] = { ...(next[courseId] || {}), error }
+        })
+        return next
+      })
+      toast.error('Complete the selected course assignment details')
+      return false
+    }
+    return true
+  }
+
+  const submitAssignments = async () => {
+    if (!enrolledCourses.length) return toast.error('No active course enrollment found')
+    const coursesToSubmit = selectedAssignmentCourses()
+    if (!coursesToSubmit.length) return toast.error('Select staff for at least one course to assign')
+    if (!validateAll(coursesToSubmit)) return
+    setSaving(true)
+    try {
+      for (const course of coursesToSubmit) {
+        const courseId = String(course.course_id)
+        const section = assignments[courseId]
+        if (section.staffIds.length === 1) {
+          await api.post(`/students/${student.student_id}/assign-staff/`, {
+            staff_id: section.staffIds[0],
+            staff_ids: section.staffIds,
+            staff_batch_map: section.batchByStaff,
+            course_id: courseId,
+            batch_ids: [section.batchByStaff[section.staffIds[0]]],
+          })
+          continue
+        }
+
+        const batchNumber = section.createForm.batch_number || await ensureBatchNumber(courseId)
+        if (!batchNumber) throw new Error('Unable to generate batch number.')
+        const staffAssignments = section.staffIds.map(id => ({
+          staff_id: Number(id),
+          timing: section.staffTimings[id],
+        }))
+        const fd = new FormData()
+        fd.append('batch_number', batchNumber)
+        fd.append('course_type', section.createForm.course_type)
+        fd.append('course_name', courseId)
+        fd.append('start_date', section.createForm.start_date)
+        fd.append('end_date', section.createForm.end_date)
+        fd.append('branch', counselorBranch)
+        fd.append('staff_assignments', JSON.stringify(staffAssignments))
+        const res = await api.post('/batches/create/', fd)
+        await api.post(`/students/${student.student_id}/assign-staff/`, {
+          staff_id: section.staffIds[0],
+          staff_ids: section.staffIds,
+          staff_batch_map: {},
+          course_id: courseId,
+          batch_ids: [res.data.batch.id],
+        })
+      }
+      toast.success('Batches assigned successfully!')
+      onSaved()
+    } catch (err) {
+      const d = err.response?.data || {}
+      toast.error(d.error || d.detail || Object.values(d)[0]?.[0] || err.message || 'Assignment failed')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <Modal open onClose={onClose} title={`Assign Batches - ${student.first_name} ${student.last_name || ''}`} size="xl">
+      <div style={{ display: 'grid', gap: 18 }}>
+        <div className="ls-alert-info">
+          <i className="fas fa-user-graduate" style={{ marginRight: 8 }} />
+          <strong>{student.first_name} {student.last_name || ''}</strong>
+          <span style={{ marginLeft: 8 }}>{student.student_id}</span>
+          {counselorBranch && <span style={{ marginLeft: 8 }}>Branch: {counselorBranch}</span>}
+        </div>
+
+        {enrolledCourses.length === 0 ? (
+          <div className="ls-alert-warning">
+            <i className="fas fa-exclamation-triangle" style={{ marginRight: 8 }} />
+            No active course enrollment found. Edit the student and select courses first.
+          </div>
+        ) : enrolledCourses.map((course, index) => {
+          const courseId = String(course.course_id)
+          const section = assignments[courseId] || initialSection(course)
+          const detail = courseDetails(course)
+          const isParallel = section.staffIds.length > 1
+          const isSingle = section.staffIds.length === 1
+          return (
+            <div key={courseId} className="ls-card" style={{ overflow: 'visible' }}>
+              <div className="ls-card-header" style={{ alignItems: 'flex-start', gap: 12 }}>
+                <div>
+                  <h5 style={{ margin: 0 }}>Course Assignment {index + 1}</h5>
+                  <div style={{ marginTop: 6, color: T.slate, fontWeight: 800 }}>
+                    {course.course_name}
+                    {detail.duration && <span style={{ marginLeft: 8, fontWeight: 600 }}>Duration: {detail.duration}</span>}
+                  </div>
+                </div>
+                <Badge text={isParallel ? 'Parallel Batch' : isSingle ? 'Normal Batch' : 'Pending'} variant={isParallel ? 'warning' : isSingle ? 'success' : 'default'} />
+              </div>
+
+              <div style={{ padding: 18, display: 'grid', gap: 18 }}>
+                <FG label="Select Staff">
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 10 }}>
+                    {emps.map(emp => {
+                      const checked = section.staffIds.includes(String(emp.id))
+                      return (
+                        <label key={emp.id} style={{ display: 'flex', alignItems: 'center', gap: 10, minHeight: 48, padding: '10px 12px', borderRadius: 10, border: `1px solid ${checked ? T.amber : 'rgba(255,255,255,.12)'}`, background: checked ? 'rgba(244,169,64,.14)' : 'rgba(255,255,255,.04)', cursor: 'pointer' }}>
+                          <input type="checkbox" checked={checked} onChange={() => toggleStaff(course, emp.id)} style={{ width: 16, height: 16, accentColor: T.amber }} />
+                          <span style={{ display: 'grid', gap: 2 }}>
+                            <strong>{emp.first_name} {emp.last_name || ''}</strong>
+                            <small style={{ color: T.slate }}>{emp.designation} - {emp.branch}</small>
+                          </span>
+                        </label>
+                      )
+                    })}
+                  </div>
+                </FG>
+
+                {isSingle && (
+                  <FG label="Select Existing Batch">
+                    {section.loadingBatches ? (
+                      <div style={{ padding: 12, textAlign: 'center' }}><i className="fas fa-spinner fa-spin" style={{ color: T.amber }} /> Loading batches...</div>
+                    ) : section.staffIds.map(id => {
+                      const staff = emps.find(emp => String(emp.id) === String(id))
+                      const options = section.staffBatches[id] || []
+                      return (
+                        <div key={id} style={{ display: 'grid', gap: 8 }}>
+                          <label style={{ fontWeight: 800 }}>{staff?.first_name} {staff?.last_name || ''}</label>
+                          <Sel value={section.batchByStaff[id] || ''} onChange={e => setCourseSection(courseId, current => ({ ...current, batchByStaff: { ...current.batchByStaff, [id]: e.target.value }, error: '' }))}>
+                            <option value="">Select Batch</option>
+                            {options.map(batch => <option key={batch.id} value={batch.id}>{batch.batch_number} - {batch.batch_timing}</option>)}
+                          </Sel>
+                          {options.length === 0 && <span className="ls-hint">No existing batches found for this staff.</span>}
+                        </div>
+                      )
+                    })}
+                    <span className="ls-hint">Single staff uses the existing normal batch assignment flow.</span>
+                  </FG>
+                )}
+
+                {isParallel && (
+                  <>
+                    <div className="ls-alert-info">
+                      <i className="fas fa-layer-group" style={{ marginRight: 8 }} />
+                      Multiple staff selected. One new shared batch will be created with separate timing for each staff.
+                    </div>
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: 12 }}>
+                      {section.staffIds.map(id => {
+                        const staff = emps.find(emp => String(emp.id) === String(id))
+                        const schedules = section.staffBatches[id] || []
+                        return (
+                          <div key={id} style={{ padding: 12, borderRadius: 10, border: '1px solid rgba(255,255,255,.12)', background: 'rgba(255,255,255,.04)', display: 'grid', gap: 8 }}>
+                            <strong>{staff?.first_name} {staff?.last_name || ''}</strong>
+                            <Sel value={section.staffTimings[id] || ''} onChange={e => setCourseSection(courseId, current => ({ ...current, staffTimings: { ...current.staffTimings, [id]: e.target.value }, error: '' }))}>
+                              <option value="">Select timing</option>
+                              {timings.map(timing => <option key={timing} value={timing}>{timing}</option>)}
+                            </Sel>
+                            <small style={{ color: T.slate }}>
+                              {section.loadingBatches ? 'Loading schedules...' : schedules.length ? schedules.slice(0, 3).map(batch => `${batch.batch_number} - ${batch.batch_timing}`).join(' | ') : 'No existing batches found.'}
+                            </small>
+                          </div>
+                        )
+                      })}
+                    </div>
+                    <div className="ls-row-grid-2">
+                      <FG label="Batch ID" hint={section.loadingBatchNumber ? 'Generating...' : 'Auto-generated based on branch'}>
+                        <Inp value={section.createForm.batch_number} readOnly placeholder="Auto-generated" />
+                      </FG>
+                      <FG label="Course Type">
+                        <Sel value={section.createForm.course_type} onChange={e => updateCreateForm(course, { course_type: e.target.value })}>
+                          <option value="">Select type</option>
+                          {(courseTypes || []).map(type => <option key={type.id || type.value} value={type.value}>{type.name}</option>)}
+                        </Sel>
+                      </FG>
+                      <FG label="Start Date">
+                        <Inp type="date" value={section.createForm.start_date} onChange={e => updateCreateForm(course, { start_date: e.target.value })} />
+                      </FG>
+                      <FG label="End Date" hint="Calculated from selected course duration">
+                        <Inp type="date" value={section.createForm.end_date} readOnly />
+                      </FG>
+                    </div>
+                  </>
+                )}
+
+                {section.error && (
+                  <div className="ls-alert-warning" style={{ margin: 0 }}>
+                    <i className="fas fa-exclamation-circle" style={{ marginRight: 8 }} />
+                    {section.error}
+                  </div>
+                )}
+              </div>
+            </div>
+          )
+        })}
+
+        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 12, paddingTop: 4 }}>
+          <button className="ls-btn ls-btn-ghost" type="button" onClick={onClose}>Cancel</button>
+          <button className="ls-btn ls-btn-primary" type="button" disabled={saving || enrolledCourses.length === 0} onClick={submitAssignments}>
+            <i className={`fas ${saving ? 'fa-spinner fa-spin' : 'fa-user-check'}`} />
+            {saving ? 'Assigning...' : 'Assign Batches'}
+          </button>
+        </div>
+      </div>
+    </Modal>
+  )
+}
+
+
 function AssignModal({ student, counselorBranch, onClose, onSaved }) {
   const navigate = useNavigate()
   const [emps, setEmps] = useState([])
@@ -1006,8 +1429,8 @@ function AssignModal({ student, counselorBranch, onClose, onSaved }) {
   const enrolledCourses = student.enrolled_courses || []
   const initialCourseId = enrolledCourses[0]?.course_id ? String(enrolledCourses[0].course_id) : ''
   const [selectedCourseId, setSelectedCourseId] = useState(initialCourseId)
-  const [batchMode, setBatchMode] = useState('existing')
-  const [showCreateBatch, setShowCreateBatch] = useState(false)
+  const [batchMode, setBatchMode] = useState('new')
+  const [showCreateBatch, setShowCreateBatch] = useState(true)
   const [createForm, setCreateForm] = useState({
     batch_number: '',
     course_type: '',
@@ -1020,9 +1443,13 @@ function AssignModal({ student, counselorBranch, onClose, onSaved }) {
   const [courseLogsheetUrl, setCourseLogsheetUrl] = useState(null)
   const [courses, setCourses] = useState([])
   const [courseTypes, setCourseTypes] = useState([])
+  const [durationError, setDurationError] = useState('')
   const [loadingBatches, setLoadingBatches] = useState(false)
   const [saving, setSaving] = useState(false)
   const [creatingBatch, setCreatingBatch] = useState(false)
+  const [staffTimings, setStaffTimings] = useState({})
+  const isSingleStaffAssignment = staffIds.length === 1
+  const isParallelBatch = staffIds.length > 1
 
   useEffect(() => {
     // ✅ Filter employees by counselor's branch AND only trainers/mentors
@@ -1043,6 +1470,17 @@ function AssignModal({ student, counselorBranch, onClose, onSaved }) {
     setBatchByStaff({})
     setBatchIds([])
   }, [selectedCourseId])
+
+  useEffect(() => {
+    if (isParallelBatch) {
+      setBatchMode('new')
+      setShowCreateBatch(true)
+    } else {
+      setBatchMode('existing')
+      setShowCreateBatch(false)
+      setStaffTimings({})
+    }
+  }, [isParallelBatch])
 
   useEffect(() => {
     if (staffIds.length === 0) {
@@ -1078,11 +1516,35 @@ function AssignModal({ student, counselorBranch, onClose, onSaved }) {
   }, [])
 
   useEffect(() => {
-    if (!showCreateBatch || createForm.batch_number || !counselorBranch) return
+    const selectedCourse = courses.find(course => String(course.id) === String(selectedCourseId))
+    setCreateForm(p => ({
+      ...p,
+      course_name: selectedCourseId || '',
+      course_type: selectedCourse?.course_type || p.course_type || '',
+    }))
+    setCourseLogsheetUrl(selectedCourse?.course_logsheet || null)
+    setLogsheetFile(null)
+  }, [selectedCourseId, courses])
+
+  useEffect(() => {
+    if (!createForm.course_name || !createForm.start_date) {
+      setDurationError('')
+      if (createForm.end_date) setCreateForm(p => ({ ...p, end_date: '' }))
+      return
+    }
+    const selectedCourse = courses.find(course => String(course.id) === String(createForm.course_name))
+    if (!selectedCourse) return
+    const { endDate, error } = calculateBatchEndDate(selectedCourse.duration, createForm.start_date)
+    setDurationError(error)
+    setCreateForm(p => (p.end_date === endDate ? p : { ...p, end_date: endDate }))
+  }, [createForm.course_name, createForm.start_date, courses])
+
+  useEffect(() => {
+    if (!isParallelBatch || createForm.batch_number || !counselorBranch) return
     api.get(`/generate/batch-number/?branch=${counselorBranch}`)
       .then(r => setCreateForm(p => ({ ...p, batch_number: r.data.batch_number || '' })))
       .catch(() => {})
-  }, [showCreateBatch, counselorBranch, createForm.batch_number])
+  }, [isParallelBatch, counselorBranch, createForm.batch_number])
 
   const timings = [
     'Morning (10:00 AM - 11:00 AM)',
@@ -1131,14 +1593,28 @@ function AssignModal({ student, counselorBranch, onClose, onSaved }) {
   const createBatchAndAssign = async (e) => {
     e.preventDefault()
     if (staffIds.length === 0) return toast.error('Select staff first')
+    if (!selectedCourseId) return toast.error('Select course first')
+    if (!isParallelBatch) return toast.error('Select multiple staff to create a parallel batch')
+    if (!createForm.start_date) return toast.error('Select start date')
+    const missingTimingStaff = staffIds.find(id => !staffTimings[id])
+    if (missingTimingStaff) return toast.error('Select timing for every staff')
+    if (!createForm.end_date || durationError) return toast.error(durationError || 'Select a valid course duration')
     setCreatingBatch(true)
     try {
+      const staffAssignments = staffIds.map(id => ({
+        staff_id: Number(id),
+        timing: staffTimings[id],
+      }))
       const fd = new FormData()
       Object.entries({
-        ...createForm,
-        faculty: staffIds[0],
+        batch_number: createForm.batch_number,
+        course_type: createForm.course_type,
+        course_name: createForm.course_name,
+        start_date: createForm.start_date,
+        end_date: createForm.end_date,
         branch: counselorBranch,
       }).forEach(([k, v]) => { if (v) fd.append(k, v) })
+      fd.append('staff_assignments', JSON.stringify(staffAssignments))
       if (logsheetFile) {
         fd.append('course_logsheet', logsheetFile)
         fd.append('logsheet_file', logsheetFile)
@@ -1152,6 +1628,9 @@ function AssignModal({ student, counselorBranch, onClose, onSaved }) {
       onSaved()
     } catch (err) {
       const d = err.response?.data || {}
+      if (d.next_batch_number) {
+        setCreateForm(p => ({ ...p, batch_number: d.next_batch_number }))
+      }
       toast.error(d.error || d.detail || Object.values(d)[0]?.[0] || 'Batch create / assign failed')
     } finally {
       setCreatingBatch(false)
@@ -1168,6 +1647,11 @@ function AssignModal({ student, counselorBranch, onClose, onSaved }) {
     const value = String(id)
     setStaffIds(prev => prev.includes(value) ? prev.filter(x => x !== value) : [...prev, value])
     setBatchByStaff(prev => {
+      const next = { ...prev }
+      if (staffIds.includes(value)) delete next[value]
+      return next
+    })
+    setStaffTimings(prev => {
       const next = { ...prev }
       if (staffIds.includes(value)) delete next[value]
       return next
@@ -1241,36 +1725,9 @@ function AssignModal({ student, counselorBranch, onClose, onSaved }) {
         </div>
       </FG>
 
-      <FG label="Batch Assignment Type">
-        <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
-          <button
-            type="button"
-            className={`ls-btn ${batchMode === 'existing' ? 'ls-btn-primary' : 'ls-btn-ghost'}`}
-            onClick={() => { setBatchMode('existing'); setShowCreateBatch(false); resetCreateBatchForm() }}
-          >
-            <i className="fas fa-layer-group" /> Add Existing Batch
-          </button>
-          <button
-            type="button"
-            className={`ls-btn ${batchMode === 'new' ? 'ls-btn-primary' : 'ls-btn-ghost'}`}
-            onClick={() => {
-              onClose()
-              navigate('/counselor/add-batch')
-            }}
-          >
-            <i className="fas fa-plus" /> Create New Batch
-          </button>
-        </div>
-      </FG>
-
-      {batchMode === 'existing' && (
+      {isSingleStaffAssignment && (
         <FG label="Select Batch">
-          {staffIds.length === 0 ? (
-            <div className="ls-alert-info">
-              <i className="fas fa-info-circle" style={{ marginRight: 8 }} />
-              Please select staff first to see their batches.
-            </div>
-          ) : loadingBatches ? (
+          {loadingBatches ? (
             <div style={{ textAlign: 'center', padding: 12 }}>
               <i className="fas fa-spinner fa-spin" style={{ color: T.amber }} /> Loading batches...
             </div>
@@ -1304,31 +1761,95 @@ function AssignModal({ student, counselorBranch, onClose, onSaved }) {
               })}
             </div>
           )}
-          <span className="ls-hint">Selected staff will share the selected batch logsheet and session sheet.</span>
+          <span className="ls-hint">Single staff assignment uses the normal existing batch flow.</span>
+        </FG>
+      )}
+
+      {isParallelBatch && (
+        <FG label="Create Parallel Batch">
+          <div className="ls-alert-info" style={{ marginBottom: 12 }}>
+            <i className="fas fa-layer-group" style={{ marginRight: 8 }} />
+            One new shared batch will be created for all selected staff. Existing batches are not used for parallel assignment.
+          </div>
+          <div style={{ display: 'grid', gap: 10, marginBottom: 14 }}>
+            {staffIds.map(id => {
+              const staff = emps.find(e => String(e.id) === String(id))
+              const schedules = batchesForStaff(id)
+              return (
+                <div key={id} style={{ padding: 12, borderRadius: 8, border: '1px solid rgba(255,255,255,.12)', background: 'rgba(255,255,255,.04)' }}>
+                  <div style={{ fontWeight: 800, marginBottom: 8 }}>{staff?.first_name} {staff?.last_name || ''}</div>
+                  <Sel value={staffTimings[id] || ''} onChange={e => setStaffTimings(prev => ({ ...prev, [id]: e.target.value }))} required>
+                    <option value="" disabled>Select timing for this staff</option>
+                    {timings.map(t => <option key={t} value={t}>{t}</option>)}
+                  </Sel>
+                  <div style={{ marginTop: 8, color: T.slate, fontSize: 12 }}>
+                    {loadingBatches ? 'Loading existing timings...' : schedules.length === 0 ? 'No existing batches found.' : schedules.slice(0, 4).map(b => `${b.batch_number} - ${b.batch_timing}`).join(' | ')}
+                  </div>
+                </div>
+              )
+            })}
+          </div>
+          <div className="ls-row-grid-2">
+            <FG label="Batch ID" required hint="Auto-generated based on branch">
+              <Inp value={createForm.batch_number} readOnly placeholder="Auto-generated" required />
+            </FG>
+            <FG label="Course Type" required>
+              <Sel value={createForm.course_type} onChange={e => setCreateForm(p => ({ ...p, course_type: e.target.value }))} required>
+                <option value="" disabled>Select type</option>
+                {(courseTypes || []).map(type => (
+                  <option key={type.id || type.value} value={type.value}>{type.name}</option>
+                ))}
+              </Sel>
+            </FG>
+            <FG label="Start Date" required>
+              <Inp type="date" value={createForm.start_date} onChange={e => setCreateForm(p => ({ ...p, start_date: e.target.value }))} required />
+            </FG>
+            <FG label="End Date" required hint="Calculated from selected course duration">
+              <Inp type="date" value={createForm.end_date} readOnly required />
+              {durationError && <span className="ls-hint" style={{ color: T.rose }}>{durationError}</span>}
+            </FG>
+          </div>
+          {courseLogsheetUrl && !logsheetFile && (
+            <div className="ls-alert-info" style={{ marginTop: 6 }}>
+              <i className="fas fa-file-pdf" style={{ marginRight: 8 }} />
+              Logsheet loaded from selected course.
+            </div>
+          )}
         </FG>
       )}
       <hr className="ls-divider" />
       <div style={{ display: 'flex', justifyContent: 'center', gap: 12 }}>
-        <button
-          className="ls-btn ls-btn-primary"
-          disabled={saving || staffIds.length === 0 || !selectedCourseId || batchMode !== 'existing' || selectedBatchIds.length === 0}
-          onClick={async () => {
-            if (staffIds.length === 0 || !selectedCourseId || selectedBatchIds.length === 0) return toast.error('Select course, staff and batch')
-            setSaving(true)
-            try {
-              await assignStudent(selectedBatchIds)
-              toast.success('Assigned successfully!')
-              onSaved()
-            } catch (err) {
-              toast.error(err.response?.data?.error || 'Assignment failed')
-            } finally {
-              setSaving(false)
-            }
-          }}
-        >
-          <i className={`fas ${saving ? 'fa-spinner fa-spin' : 'fa-user-check'}`} />
-          {saving ? 'Assigning...' : 'Assign'}
-        </button>
+        {isParallelBatch ? (
+          <button
+            className="ls-btn ls-btn-primary"
+            disabled={creatingBatch || !selectedCourseId || !createForm.start_date || !createForm.end_date || !!durationError || staffIds.some(id => !staffTimings[id])}
+            onClick={createBatchAndAssign}
+          >
+            <i className={`fas ${creatingBatch ? 'fa-spinner fa-spin' : 'fa-plus'}`} />
+            {creatingBatch ? 'Creating...' : 'Create Parallel Batch & Assign'}
+          </button>
+        ) : (
+          <button
+            className="ls-btn ls-btn-primary"
+            disabled={saving || !isSingleStaffAssignment || !selectedCourseId || selectedBatchIds.length === 0}
+            onClick={async () => {
+              if (!isSingleStaffAssignment || !selectedCourseId || selectedBatchIds.length === 0) return toast.error('Select course, staff and batch')
+              setSaving(true)
+              try {
+                await assignStudent(selectedBatchIds)
+                toast.success('Assigned successfully!')
+                onSaved()
+              } catch (err) {
+                toast.error(err.response?.data?.error || 'Assignment failed')
+              } finally {
+                setSaving(false)
+              }
+            }}
+          >
+            <i className={`fas ${saving ? 'fa-spinner fa-spin' : 'fa-user-check'}`} />
+            {saving ? 'Assigning...' : 'Assign'}
+          </button>
+        )}
         <button className="ls-btn ls-btn-ghost" onClick={onClose}>Cancel</button>
       </div>
     </Modal>

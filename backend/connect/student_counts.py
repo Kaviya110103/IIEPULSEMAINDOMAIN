@@ -96,11 +96,13 @@ def completed_students_for_staff(staff):
     qs = completed_students_queryset()
     if not staff:
         return qs.none()
-    batch_numbers = Batches.objects.filter(
+    staff_batches = Batches.objects.filter(
         Q(faculty=staff) | Q(trainer_assignments__trainer=staff)
-    ).values_list('batch_number', flat=True)
+    ).distinct()
+    batch_ids = [str(batch_id) for batch_id in staff_batches.values_list('id', flat=True)]
+    batch_numbers = staff_batches.values_list('batch_number', flat=True)
     staff_name = ' '.join(part for part in [staff.first_name, staff.last_name] if part).strip()
-    staff_filters = Q(graduated_from_trainer=staff) | Q(batch_number__in=batch_numbers)
+    staff_filters = Q(graduated_from_trainer=staff) | Q(batch_id__in=batch_ids) | Q(batch_number__in=batch_numbers)
     if staff_name:
         staff_filters |= Q(faculty_name__iexact=staff_name)
     return qs.filter(staff_filters).distinct()

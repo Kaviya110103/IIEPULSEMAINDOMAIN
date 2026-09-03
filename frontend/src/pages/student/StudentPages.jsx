@@ -21,6 +21,13 @@ const T = {
   shadowMd: '0 8px 40px rgba(15,27,45,0.14)',
 }
 
+const attendanceSessionText = (record) => {
+  const count = Number(record.completed_session_count || 0)
+  if (count > 0) return `${count} ${count === 1 ? 'Session' : 'Sessions'}`
+  if (record.session_number) return `Session ${record.session_number}: ${record.session_title || ''}`
+  return '-'
+}
+
 // ── Global Styles ─────────────────────────────────────────────────────────
 export function StudentStyles() {
   return (
@@ -465,11 +472,21 @@ export function StudentDashboard() {
 
   if (loading) return <div className="student-root"><StudentStyles /><StudentSpin /></div>
 
+  const assignedBatchIds = new Set()
+  ;(data?.student?.assigned_batches || []).forEach(batch => {
+    if (batch?.id != null) assignedBatchIds.add(batch.id)
+  })
+  ;(data?.student?.enrolled_courses || []).forEach(course => {
+    ;(course?.batches || []).forEach(batch => {
+      if (batch?.id != null) assignedBatchIds.add(batch.id)
+    })
+  })
+  const assignedBatchesCount = assignedBatchIds.size || (data?.student?.assigned_batch ? 1 : 0)
+
   const stats = [
     { label: 'Announcements', value: data?.announcements_count ?? data?.announcements?.length ?? 0, icon: 'fa-bullhorn', color: T.teal, bgColor: 'rgba(46,196,182,0.1)', to: '/student/announcements' },
     { label: 'Attendance %', value: `${data?.attendance_percentage ?? 0}%`, icon: 'fa-calendar-check', color: T.sage, bgColor: 'rgba(76,175,129,0.1)', to: '/student/attendance' },
-    { label: 'Classes Attended', value: data?.present_classes ?? 0, icon: 'fa-check-circle', color: T.navy, bgColor: 'rgba(15,27,45,0.1)', to: '/student/attendance' },
-    { label: 'Total Classes', value: data?.total_classes ?? 0, icon: 'fa-book-open', color: T.amber, bgColor: 'rgba(244,169,64,0.1)', to: '/student/attendance' },
+    { label: 'My Batches', value: assignedBatchesCount, icon: 'fa-layer-group', color: T.navy, bgColor: 'rgba(15,27,45,0.1)', to: '/student/batches' },
     { label: 'Completed Sessions', value: data?.completed_sessions_count ?? 0, icon: 'fa-check-double', color: T.sage, bgColor: 'rgba(76,175,129,0.1)', to: '/student/sessions' },
     { label: 'Tests', value: data?.tests_count ?? 0, icon: 'fa-file-alt', color: T.navy, bgColor: 'rgba(15,27,45,0.1)', to: '/student/tests' },
     { label: 'Quizzes', value: data?.quizzes_count ?? 0, icon: 'fa-question-circle', color: T.teal, bgColor: 'rgba(46,196,182,0.1)', to: '/student/quiz' },
@@ -680,6 +697,7 @@ export function StudentAnnouncements() {
 export function StudentAttendance() {
   const [records, setRecords] = useState([])
   const [loading, setLoading] = useState(true)
+  const [staffFilter, setStaffFilter] = useState('all')
   const params = new URLSearchParams(window.location.search)
   const batchId = params.get('batch_id')
   const courseId = params.get('course_id')
@@ -688,6 +706,7 @@ export function StudentAttendance() {
 
   useEffect(() => {
     setLoading(true)
+    setStaffFilter('all')
     const query = new URLSearchParams({ student: 'me' })
     if (courseId) query.set('course_id', courseId)
     else if (batchId) query.set('batch', batchId)
@@ -697,13 +716,31 @@ export function StudentAttendance() {
       .finally(() => setLoading(false))
   }, [batchId, courseId])
 
-  const present = records.filter(r => r.status === 'Present').length
-  const pct = records.length ? Math.round(present / records.length * 100) : 0
+  const staffOptions = Array.from(
+    records.reduce((map, record) => {
+      const key = String(record.staff || record.staff_id || record.marked_by || '')
+      if (key && !map.has(key)) {
+        map.set(key, {
+          id: key,
+          name: record.marked_by || 'Staff',
+        })
+      }
+      return map
+    }, new Map()).values()
+  ).sort((a, b) => a.name.localeCompare(b.name))
+
+  const filteredRecords = records.filter(record => {
+    const recordStaffKey = String(record.staff || record.staff_id || record.marked_by || '')
+    return staffFilter === 'all' || recordStaffKey === staffFilter
+  })
+
+  const present = filteredRecords.filter(r => r.status === 'Present').length
+  const pct = filteredRecords.length ? Math.round(present / filteredRecords.length * 100) : 0
 
   const stats = [
     { label: 'Attendance Rate', value: `${pct}%`, icon: 'fa-chart-line', color: T.sage, bgColor: 'rgba(76,175,129,0.1)' },
     { label: 'Present Days', value: present, icon: 'fa-check-circle', color: T.navy, bgColor: 'rgba(15,27,45,0.1)' },
-    { label: 'Absent Days', value: records.length - present, icon: 'fa-times-circle', color: T.rose, bgColor: 'rgba(232,72,85,0.1)' },
+    { label: 'Absent Days', value: filteredRecords.length - present, icon: 'fa-times-circle', color: T.rose, bgColor: 'rgba(232,72,85,0.1)' },
   ]
 
   return (
@@ -727,26 +764,74 @@ export function StudentAttendance() {
         ))}
       </div>
       <div className="student-card">
-        <StudentSectionHeader title="Attendance Records" count={records.length} />
+        <StudentSectionHeader title="Attendance Records" count={filteredRecords.length} />
         {loading ? <StudentSpin /> : records.length === 0 ? (
           <StudentEmpty msg="No attendance records found" icon="fa-calendar-alt" />
         ) : (
-          <div style={{ overflowX: 'auto' }}>
-            <table className="student-table">
-              <thead><tr><th>Date</th><th>Batch</th><th>Trainer</th><th>Session / Module</th><th>Status</th></tr></thead>
-              <tbody>
-                {records.map(r => (
-                  <tr key={r.id}>
-                    <td>{r.date}</td>
-                    <td>{r.batch_number}</td>
-                    <td>{r.marked_by || '-'}</td>
-                    <td>{r.session_number ? `Session ${r.session_number}: ${r.session_title || ''}` : '-'}</td>
-                    <td><StudentBadge text={r.status} variant={r.status === 'Present' ? 'success' : 'danger'} /></td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+          <>
+            {staffOptions.length > 1 && (
+              <div style={{ padding: '14px 18px 0' }}>
+                <div style={{ display: 'inline-flex', flexWrap: 'wrap', gap: 6, padding: 5, border: `1px solid ${T.border}`, borderRadius: 12, background: T.white }}>
+                  <button
+                    type="button"
+                    onClick={() => setStaffFilter('all')}
+                    style={{
+                      border: 'none',
+                      borderRadius: 9,
+                      padding: '8px 13px',
+                      cursor: 'pointer',
+                      background: staffFilter === 'all' ? T.amber : 'transparent',
+                      color: staffFilter === 'all' ? T.navy : T.slate,
+                      fontWeight: 700,
+                    }}
+                  >
+                    All
+                  </button>
+                  {staffOptions.map(staff => {
+                    const active = staffFilter === staff.id
+                    return (
+                      <button
+                        key={staff.id}
+                        type="button"
+                        onClick={() => setStaffFilter(staff.id)}
+                        style={{
+                          border: 'none',
+                          borderRadius: 9,
+                          padding: '8px 13px',
+                          cursor: 'pointer',
+                          background: active ? T.amber : 'transparent',
+                          color: active ? T.navy : T.slate,
+                          fontWeight: 700,
+                        }}
+                      >
+                        {staff.name}
+                      </button>
+                    )
+                  })}
+                </div>
+              </div>
+            )}
+            {filteredRecords.length === 0 ? (
+              <StudentEmpty msg="No attendance records found for selected staff" icon="fa-filter" />
+            ) : (
+              <div style={{ overflowX: 'auto' }}>
+                <table className="student-table">
+                  <thead><tr><th>Date</th><th>Batch</th><th>Trainer</th><th>Session / Module</th><th>Status</th></tr></thead>
+                  <tbody>
+                    {filteredRecords.map(r => (
+                      <tr key={r.id}>
+                        <td>{r.date}</td>
+                        <td>{r.batch_number}</td>
+                        <td>{r.marked_by || '-'}</td>
+                        <td>{attendanceSessionText(r)}</td>
+                        <td><StudentBadge text={r.status} variant={r.status === 'Present' ? 'success' : 'danger'} /></td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </>
         )}
       </div>
     </div>
@@ -1309,10 +1394,14 @@ export function StudentTests() {
   useEffect(() => { loadTests() }, [])
 
   const startTest = async (test) => {
+    if (test.creation_method === 'upload' && test.question_paper_url) {
+      window.open(test.question_paper_url, '_blank', 'noopener,noreferrer')
+      return
+    }
     try {
       const testId = test.test_id || test.id
       const response = await api.get(`/tests/${testId}/questions/`)
-      setActiveTest({ ...test, questions: response.data.questions })
+      setActiveTest({ ...test, questions: response.data.questions || [] })
     } catch (err) {
       console.error("Error loading questions:", err)
       toast.error("Failed to load test questions")
@@ -1356,15 +1445,24 @@ export function StudentTests() {
                       </p>
                     )}
                     <div style={{ marginBottom: 16 }}>
-                      <StudentBadge text={`${test.total_questions || 0} Questions`} variant="info" />
+                      <StudentBadge text={test.status || 'Upcoming'} variant={test.status === 'Active' ? 'success' : test.status === 'Completed' ? 'default' : 'info'} />
+                      <StudentBadge text={test.creation_method === 'upload' ? 'Question Paper' : `${test.total_questions || 0} Questions`} variant="info" style={{ marginLeft: 8 }} />
+                    </div>
+                    <div style={{ display: 'grid', gap: 6, fontSize: 12, color: T.slate, marginBottom: 14 }}>
+                      <span><i className="fas fa-graduation-cap" style={{ marginRight: 6 }} />{test.course_name || 'Course'}</span>
+                      <span><i className="fas fa-user-tie" style={{ marginRight: 6 }} />{test.trainer || 'Trainer'}</span>
+                      <span><i className="far fa-calendar-alt" style={{ marginRight: 6 }} />{test.test_date || 'Date not set'} {test.start_time ? `- ${test.start_time}` : ''}</span>
+                      <span><i className="far fa-clock" style={{ marginRight: 6 }} />{test.duration_minutes || 0} minutes</span>
                     </div>
                     <button
                       className="student-btn student-btn-primary"
                       style={{ width: '100%' }}
                       onClick={() => startTest(test)}
-                      disabled={test.total_questions === 0}
+                      disabled={test.creation_method !== 'upload' && test.total_questions === 0}
                     >
-                      {test.total_questions === 0 ? '⚠️ No Questions' : '▶️ Start Test'}
+                      {test.creation_method === 'upload'
+                        ? 'Open Question Paper'
+                        : test.total_questions === 0 ? 'No Questions' : 'View Questions'}
                     </button>
                   </div>
                 </div>
@@ -1462,6 +1560,37 @@ function TakeTestComponent({ test, onDone }) {
   const [submitting, setSubmitting] = useState(false)
   const [result, setResult] = useState(null)
   const questions = test.questions || []
+
+  if (test.test_type === 'technical') {
+    return (
+      <div className="student-root">
+        <StudentStyles />
+        <StudentPageHeader
+          title={test.test_title}
+          sub={`${test.course_name || 'Course'} - ${test.test_date || 'Date not set'} ${test.start_time ? `- ${test.start_time}` : ''}`}
+          btn={<button className="student-btn student-btn-ghost" onClick={onDone}>Back to Tests</button>}
+        />
+        <div className="student-card">
+          <StudentSectionHeader title="Technical Questions" count={questions.length} />
+          <div style={{ padding: 22, display: 'grid', gap: 14 }}>
+            {test.instructions && (
+              <div className="student-alert-info">
+                <strong>Instructions:</strong> {test.instructions}
+              </div>
+            )}
+            {questions.length === 0 ? (
+              <StudentEmpty msg="No technical questions found" icon="fa-file-alt" />
+            ) : questions.map((q, idx) => (
+              <div key={q.id || idx} style={{ padding: 16, border: `1px solid ${T.border}`, borderRadius: 10, background: '#fff' }}>
+                <div style={{ fontWeight: 800, color: T.navy, marginBottom: 8 }}>Question {idx + 1}</div>
+                <p style={{ margin: 0, color: T.slate }}>{q.question_text}</p>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+    )
+  }
 
   // In TakeTestComponent, update the submitTest function:
 

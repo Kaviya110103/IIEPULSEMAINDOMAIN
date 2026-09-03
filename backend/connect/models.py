@@ -130,6 +130,7 @@ class BatchTrainerAssignment ( models.Model ) :
             on_delete = models.CASCADE ,
             related_name = 'batch_trainer_assignments'
     )
+    batch_timing = models.CharField ( max_length = 50 , blank = True , null = True )
     is_primary = models.BooleanField ( default = False )
     assigned_at = models.DateTimeField ( auto_now_add = True )
 
@@ -515,8 +516,25 @@ class StudyMaterialAssignment ( models.Model ) :
 
 
 class QuizTest ( models.Model ) :
+    TEST_TYPE_CHOICES = [
+            ('mcq' , 'MCQ Test') ,
+            ('technical' , 'Technical Test') ,
+    ]
+    CREATION_METHOD_CHOICES = [
+            ('manual' , 'Create Questions Manually') ,
+            ('upload' , 'Upload Question Paper') ,
+    ]
+
     title = models.CharField ( max_length = 200 )
     description = models.TextField ( blank = True , null = True )
+    test_type = models.CharField ( max_length = 20 , choices = TEST_TYPE_CHOICES , default = 'mcq' )
+    creation_method = models.CharField ( max_length = 20 , choices = CREATION_METHOD_CHOICES , default = 'manual' )
+    course = models.ForeignKey ( 'Courses' , on_delete = models.SET_NULL , null = True , blank = True , related_name = 'technical_tests' )
+    test_date = models.DateField ( null = True , blank = True )
+    start_time = models.TimeField ( null = True , blank = True )
+    duration_minutes = models.PositiveIntegerField ( default = 60 )
+    instructions = models.TextField ( blank = True , null = True )
+    question_paper = models.FileField ( upload_to = 'technical_tests/' , blank = True , null = True )
     created_by = models.ForeignKey('Employee', on_delete=models.SET_NULL, null=True, blank=True, related_name='created_tests')
     created_at = models.DateTimeField ( auto_now_add = True )
     
@@ -530,11 +548,11 @@ class QuizTest ( models.Model ) :
 class Question ( models.Model ) :
     test = models.ForeignKey ( QuizTest , on_delete = models.CASCADE )
     question_text = models.CharField ( max_length = 500 )
-    option1 = models.CharField ( max_length = 255 )
-    option2 = models.CharField ( max_length = 255 )
-    option3 = models.CharField ( max_length = 255 )
-    option4 = models.CharField ( max_length = 255 )
-    correct_answer = models.CharField ( max_length = 255 )
+    option1 = models.CharField ( max_length = 255 , blank = True )
+    option2 = models.CharField ( max_length = 255 , blank = True )
+    option3 = models.CharField ( max_length = 255 , blank = True )
+    option4 = models.CharField ( max_length = 255 , blank = True )
+    correct_answer = models.CharField ( max_length = 255 , blank = True )
     
     def __str__ ( self ) :
         return self.question_text

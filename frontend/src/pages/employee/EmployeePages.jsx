@@ -22,6 +22,13 @@ const T = {
   shadowMd: '0 8px 40px rgba(15,27,45,0.14)',
 }
 
+const attendanceSessionText = (record) => {
+  const count = Number(record.completed_session_count || 0)
+  if (count > 0) return `${count} ${count === 1 ? 'Session' : 'Sessions'}`
+  if (record.session_number) return `Session ${record.session_number}: ${record.session_title || ''}`
+  return '-'
+}
+
 const css = `
   @import url('https://fonts.googleapis.com/css2?family=Playfair+Display:wght@600;700&family=DM+Sans:wght@300;400;500;600&display=swap');
 
@@ -677,31 +684,66 @@ export function EmployeeDashboard() {
 export function ViewBatches() {
   const location = useLocation()
   const [batches, setBatches] = useState([])
+  const [previousBatches, setPreviousBatches] = useState([])
   const [loading, setLoading] = useState(true)
+  const [search, setSearch] = useState('')
   const [sessionsModal, setSessionsModal] = useState(null)
   const [studentsModal, setStudentsModal] = useState(null)
 
   useEffect(() => {
-    api.get('/batches/').then(r => setBatches(r.data.results || r.data)).finally(() => setLoading(false))
-  }, [])
+    const timer = setTimeout(() => {
+      setLoading(true)
+      const params = new URLSearchParams()
+      if (search.trim()) params.set('search', search.trim())
+      const suffix = params.toString() ? `?${params.toString()}` : ''
+      const previousSuffix = params.toString() ? `?access=previous&${params.toString()}` : '?access=previous'
+      Promise.all([
+        api.get(`/batches/${suffix}`),
+        api.get(`/batches/${previousSuffix}`).catch(() => ({ data: { results: [] } })),
+      ]).then(([activeRes, previousRes]) => {
+        setBatches(activeRes.data.results || activeRes.data || [])
+        setPreviousBatches(previousRes.data.results || previousRes.data || [])
+      }).finally(() => setLoading(false))
+    }, 250)
+    return () => clearTimeout(timer)
+  }, [search])
 
   useEffect(() => {
     const sessionBatchId = new URLSearchParams(location.search).get('session_batch_id')
-    if (!sessionBatchId || batches.length === 0) return
-    const matchedBatch = batches.find(batch => String(batch.id) === String(sessionBatchId))
+    const allBatches = [...batches, ...previousBatches.map(batch => ({ ...batch, accessStatus: 'previous' }))]
+    if (!sessionBatchId || allBatches.length === 0) return
+    const matchedBatch = allBatches.find(batch => String(batch.id) === String(sessionBatchId))
     if (matchedBatch) setSessionsModal(matchedBatch)
-  }, [batches, location.search])
-
-  if (loading) return <div className="employee-root"><Styles /><Spin /></div>
+  }, [batches, previousBatches, location.search])
 
   return (
     <div className="employee-root">
       <Styles />
       <PH title="📘 My Batches" sub="View and manage your assigned batches" />
 
-      {batches.length === 0 ? (
+      <div className="employee-card" style={{ marginBottom: 18 }}>
+        <div className="employee-card-body" style={{ padding: 16 }}>
+          <div className="employee-fg" style={{ margin: 0 }}>
+            <label className="employee-label">Search Batches</label>
+            <div style={{ position: 'relative' }}>
+              <i className="fas fa-search" style={{ position: 'absolute', left: 14, top: '50%', transform: 'translateY(-50%)', color: T.slate }} />
+              <input
+                className="employee-input"
+                style={{ paddingLeft: 42 }}
+                value={search}
+                onChange={e => setSearch(e.target.value)}
+                placeholder="Search by course, batch, student, timing..."
+              />
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {loading ? (
+        <div className="employee-card"><Spin /></div>
+      ) : batches.length === 0 ? (
         <div className="employee-card">
-          <Empty msg="No batches assigned to you." icon="fa-users" />
+          <Empty msg={search.trim() ? "No matching active batches found." : "No batches assigned to you."} icon="fa-users" />
         </div>
       ) : (
         <div className="employee-batch-grid">
@@ -709,10 +751,31 @@ export function ViewBatches() {
             <BatchCard
               key={batch.id}
               batch={batch}
+              accessStatus="active"
               onViewSessions={() => setSessionsModal(batch)}
               onViewStudents={() => setStudentsModal(batch)}
             />
           ))}
+        </div>
+      )}
+
+      {previousBatches.length > 0 && (
+        <div style={{ marginTop: 28 }}>
+          <SH title="Previous / Reassigned Batches" count={previousBatches.length} />
+          <div className="employee-alert-info" style={{ marginBottom: 14 }}>
+            <i className="fas fa-info-circle" /> Previous trainers can view sessions and attendance history, and can still upload learning materials or quizzes. Attendance and logsheet updates are disabled.
+          </div>
+          <div className="employee-batch-grid">
+            {previousBatches.map(batch => (
+              <BatchCard
+                key={`previous-${batch.id}`}
+                batch={{ ...batch, accessStatus: 'previous' }}
+                accessStatus="previous"
+                onViewSessions={() => setSessionsModal({ ...batch, accessStatus: 'previous' })}
+                onViewStudents={() => setStudentsModal({ ...batch, accessStatus: 'previous' })}
+              />
+            ))}
+          </div>
         </div>
       )}
 
@@ -723,7 +786,8 @@ export function ViewBatches() {
 }
 
 // ─── Batch Card ────────────────────────────────────────────────────────────
-function BatchCard({ batch, onViewSessions, onViewStudents }) {
+function BatchCard({ batch, onViewSessions, onViewStudents, accessStatus = 'active' }) {
+  const isPrevious = accessStatus === 'previous' || batch.accessStatus === 'previous'
   const btn = (label, icon, color, onClick) => (
     <button
       onClick={onClick}
@@ -741,6 +805,7 @@ function BatchCard({ batch, onViewSessions, onViewStudents }) {
       <div className="employee-batch-header">
         <h4>{batch.batch_number}</h4>
         <p>{batch.course_name_display}</p>
+        {isPrevious && <Badge text="Previous Trainer" variant="warning" />}
       </div>
       <div className="employee-batch-body">
         <div className="employee-batch-row">
@@ -766,16 +831,20 @@ function BatchCard({ batch, onViewSessions, onViewStudents }) {
       </div>
       <div className="employee-batch-footer">
         <div className="employee-batch-actions">
-          <a href={`/employee/attendance?batch_id=${batch.id}`} className="employee-btn employee-btn-sm" style={{ background: T.sage, color: '#fff', textDecoration: 'none' }}>
-            <i className="fas fa-check-circle" /> Mark Attendance
-          </a>
+          {!isPrevious && (
+            <a href={`/employee/attendance?batch_id=${batch.id}`} className="employee-btn employee-btn-sm" style={{ background: T.sage, color: '#fff', textDecoration: 'none' }}>
+              <i className="fas fa-check-circle" /> Mark Attendance
+            </a>
+          )}
           <a href={`/employee/attendance-history?batch_id=${batch.id}`} className="employee-btn employee-btn-sm" style={{ background: 'transparent', border: `1.5px solid ${T.navy}`, color: T.navy, textDecoration: 'none' }}>
             <i className="fas fa-eye" /> View Attendance
           </a>
         </div>
         <div className="employee-batch-actions">
-          {btn('View Sessions', 'fa-list', T.rose, onViewSessions)}
+          {btn(isPrevious ? 'View Session History' : 'View Sessions', 'fa-list', T.rose, onViewSessions)}
           {btn('View Students', 'fa-users', T.teal, onViewStudents)}
+          {isPrevious && <a href={`/employee/materials/upload?batch_id=${batch.id}`} className="employee-btn employee-btn-sm" style={{ background: 'transparent', border: `1.5px solid ${T.amber}`, color: T.amber, textDecoration: 'none' }}><i className="fas fa-upload" /> Material</a>}
+          {isPrevious && <a href={`/employee/quiz/upload?batch_id=${batch.id}`} className="employee-btn employee-btn-sm" style={{ background: 'transparent', border: `1.5px solid ${T.teal}`, color: T.teal, textDecoration: 'none' }}><i className="fas fa-file-upload" /> Quiz</a>}
         </div>
 
       </div>
@@ -886,7 +955,7 @@ function AttendanceModal({ batch, onClose }) {
                       <td>{r.student_id_display || '-'}</td>
                       <td>{r.batch_number}</td>
                       <td>{r.marked_by || '-'}</td>
-                      <td>{r.session_number ? `Session ${r.session_number}: ${r.session_title || ''}` : '-'}</td>
+                      <td>{attendanceSessionText(r)}</td>
                       <td>
                         <Badge text={r.status} variant={r.status === 'Present' ? 'success' : r.status === 'Late' ? 'warning' : 'danger'} />
                       </td>
@@ -912,6 +981,7 @@ export function AttendanceHistoryPage() {
   const [loadingRecords, setLoadingRecords] = useState(false)
   const [filterMode, setFilterMode] = useState('all')
   const [studentFilter, setStudentFilter] = useState('')
+  const [staffFilter, setStaffFilter] = useState('all')
   const [dateFilter, setDateFilter] = useState(toLocalDateInputValue(new Date()))
 
   useEffect(() => {
@@ -941,6 +1011,18 @@ export function AttendanceHistoryPage() {
   }, [selectedBatch])
 
   const selectedBatchDetails = batches.find(batch => String(batch.id) === String(selectedBatch))
+  const trainerOptions = Array.from(
+    records.reduce((map, record) => {
+      const key = String(record.staff || record.staff_id || record.marked_by || '')
+      if (key && !map.has(key)) {
+        map.set(key, {
+          id: key,
+          name: record.marked_by || 'Trainer',
+        })
+      }
+      return map
+    }, new Map()).values()
+  ).sort((a, b) => a.name.localeCompare(b.name))
   const studentOptions = Array.from(
     records.reduce((map, record) => {
       const key = String(record.student || record.student_id || record.student_id_display || record.student_name || '')
@@ -964,17 +1046,20 @@ export function AttendanceHistoryPage() {
   const filteredRecords = records.filter(record => {
     const recordDate = new Date(record.date)
     const recordStudentKey = String(record.student || record.student_id || record.student_id_display || record.student_name || '')
+    const recordStaffKey = String(record.staff || record.staff_id || record.marked_by || '')
     const matchesStudent = !studentFilter || recordStudentKey === studentFilter
+    const matchesStaff = staffFilter === 'all' || recordStaffKey === staffFilter
     let matchesDate = true
     if (filterMode === 'date') matchesDate = record.date === dateFilter
     if (filterMode === 'week') matchesDate = recordDate >= weekStart && recordDate <= today
     if (filterMode === 'month') matchesDate = recordDate >= monthStart && recordDate <= today
-    return matchesStudent && matchesDate
+    return matchesStudent && matchesStaff && matchesDate
   })
 
   const clearAttendanceFilters = () => {
     setFilterMode('all')
     setStudentFilter('')
+    setStaffFilter('all')
     setDateFilter(toLocalDateInputValue(new Date()))
   }
 
@@ -988,7 +1073,7 @@ export function AttendanceHistoryPage() {
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 12, alignItems: 'end' }}>
             <div className="employee-fg" style={{ marginBottom: 0 }}>
               <label className="employee-label">Select Batch</label>
-              <select className="employee-select" value={selectedBatch} onChange={e => { setSelectedBatch(e.target.value); setStudentFilter('') }} disabled={loadingBatches}>
+              <select className="employee-select" value={selectedBatch} onChange={e => { setSelectedBatch(e.target.value); setStudentFilter(''); setStaffFilter('all') }} disabled={loadingBatches}>
                 <option value="">Select batch</option>
                 {batches.map(batch => (
                   <option key={batch.id} value={batch.id}>{batch.batch_number} - {batch.course_name_display}</option>
@@ -1024,6 +1109,52 @@ export function AttendanceHistoryPage() {
         </div>
       </div>
 
+      {trainerOptions.length > 1 && (
+        <div className="employee-card" style={{ marginBottom: 20 }}>
+          <div className="employee-card-body" style={{ padding: 14 }}>
+            <label className="employee-label">Trainer Section</label>
+            <div style={{ display: 'inline-flex', flexWrap: 'wrap', gap: 6, padding: 5, border: `1px solid ${T.border}`, borderRadius: 12, background: T.white }}>
+              <button
+                type="button"
+                onClick={() => setStaffFilter('all')}
+                style={{
+                  border: 'none',
+                  borderRadius: 9,
+                  padding: '8px 13px',
+                  cursor: 'pointer',
+                  background: staffFilter === 'all' ? T.amber : 'transparent',
+                  color: staffFilter === 'all' ? T.navy : T.slate,
+                  fontWeight: 700,
+                }}
+              >
+                All Trainers
+              </button>
+              {trainerOptions.map(trainer => {
+                const active = staffFilter === trainer.id
+                return (
+                  <button
+                    key={trainer.id}
+                    type="button"
+                    onClick={() => setStaffFilter(trainer.id)}
+                    style={{
+                      border: 'none',
+                      borderRadius: 9,
+                      padding: '8px 13px',
+                      cursor: 'pointer',
+                      background: active ? T.amber : 'transparent',
+                      color: active ? T.navy : T.slate,
+                      fontWeight: 700,
+                    }}
+                  >
+                    {trainer.name}
+                  </button>
+                )
+              })}
+            </div>
+          </div>
+        </div>
+      )}
+
       <div className="employee-card">
         <SH title={selectedBatchDetails ? `${selectedBatchDetails.batch_number} Attendance` : 'Attendance History'} count={filteredRecords.length} />
         {loadingBatches || loadingRecords ? <Spin /> : !selectedBatch ? (
@@ -1048,7 +1179,7 @@ export function AttendanceHistoryPage() {
                     <td>{record.student_id_display || '-'}</td>
                     <td>{record.batch_number}</td>
                     <td>{record.marked_by || '-'}</td>
-                    <td>{record.session_number ? `Session ${record.session_number}: ${record.session_title || ''}` : '-'}</td>
+                    <td>{attendanceSessionText(record)}</td>
                     <td>
                       <Badge text={record.status} variant={record.status === 'Present' ? 'success' : record.status === 'Late' ? 'warning' : 'danger'} />
                     </td>
@@ -1232,8 +1363,10 @@ function SessionsModal({ batch, onClose }) {
   data?.batch?.course_logsheet_url ||
   data?.batch?.course_logsheet
   const tabSessions = tab === 'all' ? sessions : tab === 'done' ? completed : pending
+  const canUpdateLogsheet = data?.can_update_logsheet !== false && batch.accessStatus !== 'previous'
 
   const handleToggle = async (session) => {
+    if (!canUpdateLogsheet) return toast.error('Previous trainers can view session history but cannot update logsheet progress.')
     setToggling(session.id)
     try {
       let response
@@ -1348,13 +1481,13 @@ function SessionsModal({ batch, onClose }) {
             </div>
           )}
 
-          {sessions.length > 0 && (
+          {sessions.length > 0 && canUpdateLogsheet && (
             <div className="employee-alert-info" style={{ marginBottom: 14 }}>
               <i className="fas fa-info-circle" /> <strong>How it works:</strong> Check the box next to a session to mark it as completed. Students will be notified and can confirm or raise a doubt.
             </div>
           )}
 
-          {allMentorSessionsCompleted && students.length > 0 && (
+          {canUpdateLogsheet && allMentorSessionsCompleted && students.length > 0 && (
             <div style={{
               marginBottom: 14,
               padding: 16,
@@ -1426,13 +1559,17 @@ function SessionsModal({ batch, onClose }) {
                   {toggling === s.id ? (
                     <i className="fas fa-spinner fa-spin" style={{ fontSize: 20, color: T.amber }}></i>
                   ) : (
-                    <input
-                      type="checkbox"
-                      checked={!!s.staff_completed}
-                      onChange={() => handleToggle(s)}
-                      style={{ width: 20, height: 20, cursor: 'pointer', accentColor: T.sage }}
-                      title={s.staff_completed ? 'Click to unmark' : 'Click to mark as completed'}
-                    />
+                    canUpdateLogsheet ? (
+                      <input
+                        type="checkbox"
+                        checked={!!s.staff_completed}
+                        onChange={() => handleToggle(s)}
+                        style={{ width: 20, height: 20, cursor: 'pointer', accentColor: T.sage }}
+                        title={s.staff_completed ? 'Click to unmark' : 'Click to mark as completed'}
+                      />
+                    ) : (
+                      <i className={`fas ${s.staff_completed ? 'fa-check-circle' : 'fa-circle'}`} style={{ fontSize: 20, color: s.staff_completed ? T.sage : T.slate }} />
+                    )
                   )}
                 </div>
 
@@ -1578,11 +1715,14 @@ export function MarkAttendance() {
   }, [])
 
   const selectedBatchDetails = batches.find(b => String(b.id) === String(selectedBatch))
-  const selectedBatchTrainers = selectedBatchDetails?.trainers?.length
+  const batchTrainerSections = selectedBatchDetails?.trainers?.length
     ? selectedBatchDetails.trainers
     : selectedBatchDetails?.trainer_ids?.length
       ? selectedBatchDetails.trainer_ids.map((id, index) => ({ id, name: selectedBatchDetails.trainer_names?.[index] || `Trainer ${index + 1}` }))
       : []
+  const selectedBatchTrainers = currentEmployeeId
+    ? batchTrainerSections.filter(trainer => String(trainer.id) === String(currentEmployeeId))
+    : []
 
   useEffect(() => {
     if (!selectedBatchDetails) {
@@ -1592,8 +1732,7 @@ export function MarkAttendance() {
       return
     }
     const trainerIds = selectedBatchTrainers.map(t => String(t.id))
-    const ownTrainerId = trainerIds.includes(String(currentEmployeeId)) ? String(currentEmployeeId) : ''
-    setSelectedTrainerId(prev => trainerIds.includes(String(prev)) ? String(prev) : (ownTrainerId || trainerIds[0] || ''))
+    setSelectedTrainerId(trainerIds[0] || '')
     setSelectedSessionId('')
     api.get(`/batches/${selectedBatch}/sessions-logsheet/`)
       .then(r => setSessions(r.data?.sessions || []))
@@ -1621,7 +1760,6 @@ export function MarkAttendance() {
       const data = Object.entries(attendance).map(([student_id, status]) => ({ student_id: parseInt(student_id), status }))
       const res = await api.post('/attendance/mark/', {
         batch_id: parseInt(selectedBatch),
-        trainer_id: parseInt(selectedTrainerId),
         session_id: selectedSessionId ? parseInt(selectedSessionId) : null,
         date,
         attendance: data
@@ -1690,7 +1828,7 @@ export function MarkAttendance() {
                         fontWeight: 700,
                       }}
                     >
-                      {trainer.name || `Trainer ${trainer.id}`}
+                      {trainer.name || `Trainer ${trainer.id}`}{trainer.batch_timing ? ` (${trainer.batch_timing})` : ''}
                     </button>
                   )
                 })}
@@ -1857,7 +1995,7 @@ export function StudyMaterials({ studentView = false }) {
                         </div>
                       </div>
                     </td>
-                    {!studentView && <td>{m.uploaded_by_name}</td>}
+                    {!studentView && <td>{m.uploaded_by_name}<div style={{ marginTop: 4 }}><Badge text={m.uploaded_by_trainer_status || 'Current Trainer'} variant={m.uploaded_by_trainer_status === 'Previous Trainer' ? 'warning' : 'success'} /></div></td>}
                     <td>{m.batch_number}</td>
                     <td style={{ fontSize: 12 }}>{m.uploaded_at ? new Date(m.uploaded_at).toLocaleDateString('en-IN') : '—'}</td>
                     <td>
@@ -1881,7 +2019,7 @@ export function StudyMaterials({ studentView = false }) {
                       <td>
                         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
                           <button className="employee-btn employee-btn-sm employee-btn-teal" onClick={() => setEditMaterial(m)}>
-                            <i className="fas fa-edit" /> Edit
+                            <i className="fas fa-edit" /> Questions
                           </button>
                           <button className="employee-btn employee-btn-sm employee-btn-danger" onClick={() => setDeleteId(m.id)}>
                             <i className="fas fa-trash-alt" />
@@ -1923,7 +2061,18 @@ function MaterialUploadModal({ onClose, onSaved, material = null }) {
   const [batches, setBatches] = useState([])
   const [saving, setSaving] = useState(false)
 
-  useEffect(() => { api.get('/batches/').then(r => setBatches(r.data.results || r.data)) }, [])
+  useEffect(() => {
+    const initialBatchId = new URLSearchParams(window.location.search).get('batch_id') || ''
+    Promise.all([
+      api.get('/batches/'),
+      api.get('/batches/?access=previous').catch(() => ({ data: { results: [] } })),
+    ]).then(([activeRes, previousRes]) => {
+      const active = activeRes.data.results || activeRes.data || []
+      const previous = (previousRes.data.results || previousRes.data || []).map(batch => ({ ...batch, accessStatus: 'previous' }))
+      setBatches([...active, ...previous])
+      if (initialBatchId) setForm(prev => ({ ...prev, batch: initialBatchId }))
+    })
+  }, [])
 
   const save = async e => {
     e.preventDefault(); setSaving(true)
@@ -1955,7 +2104,7 @@ function MaterialUploadModal({ onClose, onSaved, material = null }) {
           <label className="employee-label">Batch <span className="employee-req">*</span></label>
           <select className="employee-select" value={form.batch} onChange={e => setForm(p => ({ ...p, batch: e.target.value }))} required>
             <option value="">Select batch…</option>
-            {batches.map(b => <option key={b.id} value={b.id}>{b.batch_number} — {b.course_name_display}</option>)}
+            {batches.map(b => <option key={b.id} value={b.id}>{b.batch_number} - {b.course_name_display}{b.accessStatus === 'previous' ? ' - Reassigned' : ''}</option>)}
           </select>
         </div>
         <div className="employee-fg">
@@ -1986,6 +2135,7 @@ function MaterialUploadModal({ onClose, onSaved, material = null }) {
 export function MaterialLibrary() {
   const [materials, setMaterials] = useState([])
   const [batches, setBatches] = useState([])
+  const [previousBatches, setPreviousBatches] = useState([])
   const [loading, setLoading] = useState(true)
   const [showUpload, setShowUpload] = useState(false)
   const [assignMaterial, setAssignMaterial] = useState(null)
@@ -2000,12 +2150,15 @@ export function MaterialLibrary() {
         if (value) params.append(key, value)
       })
       const query = params.toString()
-      const [materialsRes, batchesRes] = await Promise.all([
+      const [materialsRes, batchesRes, previousRes] = await Promise.all([
         api.get(`/material-library/${query ? `?${query}` : ''}`),
         api.get('/batches/'),
+        api.get('/batches/?access=previous').catch(() => ({ data: { results: [] } })),
       ])
+      const active = batchesRes.data.results || batchesRes.data || []
+      const previous = (previousRes.data.results || previousRes.data || []).map(batch => ({ ...batch, accessStatus: 'previous' }))
       setMaterials(materialsRes.data.results || materialsRes.data || [])
-      setBatches(batchesRes.data.results || batchesRes.data || [])
+      setBatches([...active, ...previous])
     } catch (err) {
       toast.error(err.response?.data?.error || 'Failed to load material library')
     } finally {
@@ -2087,7 +2240,7 @@ export function MaterialLibrary() {
             <label className="employee-label">Batch</label>
             <select className="employee-select" value={filters.batch} onChange={e => setFilters(p => ({ ...p, batch: e.target.value }))}>
               <option value="">All batches</option>
-              {filteredBatches.map(batch => <option key={batch.id} value={batch.id}>{batch.batch_number}</option>)}
+              {filteredBatches.map(batch => <option key={batch.id} value={batch.id}>{batch.batch_number}{batch.accessStatus === 'previous' ? ' - Reassigned' : ''}</option>)}
             </select>
           </div>
           <div style={{ display: 'flex', gap: 10 }}>
@@ -2278,7 +2431,7 @@ function LibraryAssignModal({ material, materials, batches, onClose, onSaved }) 
           <label className="employee-label">Target Batch <span className="employee-req">*</span></label>
           <select className="employee-select" value={form.batch} onChange={e => setForm(p => ({ ...p, batch: e.target.value }))} required disabled={!form.branch}>
             <option value="">Select batch...</option>
-            {filteredBatches.map(batch => <option key={batch.id} value={batch.id}>{batch.batch_number} - {batch.course_name_display}</option>)}
+            {filteredBatches.map(batch => <option key={batch.id} value={batch.id}>{batch.batch_number} - {batch.course_name_display}{batch.accessStatus === 'previous' ? ' - Reassigned' : ''}</option>)}
           </select>
         </div>
         <div style={{ display: 'flex', gap: 12, justifyContent: 'flex-end', marginTop: 8 }}>
@@ -2658,55 +2811,17 @@ export function StaffCompletedStudents() {
     loadCompletedStudents()
   }, [])
 
-  // Function to fetch attendance for a single student
-  const fetchStudentAttendance = async (studentId) => {
-    try {
-      const response = await api.get(`/attendance/?student=${studentId}`)
-      const records = response.data.results || response.data || []
-      const present = records.filter(r => r.status === 'Present' || r.status === 'present').length
-      const total = records.length
-      const percentage = total > 0 ? Math.round((present / total) * 100) : 0
-      return {
-        attendance_percentage: percentage,
-        present_count: present,
-        total_attendance: total
-      }
-    } catch (err) {
-      console.error(`Error fetching attendance for student ${studentId}:`, err)
-      return { attendance_percentage: 0, present_count: 0, total_attendance: 0 }
-    }
-  }
-
   const loadCompletedStudents = async () => {
     setLoading(true)
     try {
       const response = await api.get('/completed-students/')
       let data = response.data.results || response.data || []
-
-      // Fetch attendance and test scores for each student
-      const studentsWithData = await Promise.all(
-        data.map(async (student) => {
-          const originalStudentId = student.original_student_db_id || (
-            String(student.original_student_id || '').match(/^\d+$/) ? student.original_student_id : null
-          )
-          const storedAttendance = Number(student.attendance_percentage || 0)
-          const needsAttendanceLookup = originalStudentId && !storedAttendance
-          const attendance = needsAttendanceLookup
-            ? await fetchStudentAttendance(originalStudentId)
-            : {
-                attendance_percentage: storedAttendance,
-                present_count: student.present_count || 0,
-                total_attendance: student.total_attendance || 0
-              }
-
-          return {
-            ...student,
-            attendance_percentage: attendance.attendance_percentage ?? storedAttendance,
-            present_count: attendance.present_count,
-            total_attendance: attendance.total_attendance
-          }
-        })
-      )
+      const studentsWithData = data.map(student => ({
+        ...student,
+        attendance_percentage: Number(student.attendance_percentage || 0),
+        present_count: Number(student.present_count || 0),
+        total_attendance: Number(student.total_attendance || 0),
+      }))
 
       setStudents(studentsWithData)
 
@@ -4298,43 +4413,159 @@ export function StaffOwnLeaveHistory() {
 // ══════════════════════════════════════════════════════════════════════════════
 
 export function CreateTest() {
-  const [title, setTitle] = useState('')
-  const [description, setDescription] = useState('')
+  const navigate = useNavigate()
+  const [mode, setMode] = useState('manual')
+  const [form, setForm] = useState({
+    title: '',
+    test_date: '',
+    start_time: '',
+    duration_minutes: 60,
+    instructions: '',
+  })
+  const [questions, setQuestions] = useState([{ question_text: 'Write a program to display palindrome words.' }])
+  const [file, setFile] = useState(null)
   const [saving, setSaving] = useState(false)
+
+
+  const updateForm = (key, value) => setForm(prev => ({ ...prev, [key]: value }))
+
+  const addTechnicalQuestion = () => setQuestions(prev => [...prev, { question_text: '' }])
+  const updateTechnicalQuestion = (index, value) => {
+    setQuestions(prev => prev.map((item, idx) => idx === index ? { ...item, question_text: value } : item))
+  }
+  const removeTechnicalQuestion = (index) => {
+    if (questions.length === 1) return toast.error('At least one question is needed')
+    setQuestions(prev => prev.filter((_, idx) => idx !== index))
+  }
 
   const handleSubmit = async (e) => {
     e.preventDefault()
-    if (!title.trim()) { toast.error('Please enter a test title'); return }
+    if (!form.title.trim() || !form.test_date || !form.start_time) {
+      toast.error('Fill title, date and start time')
+      return
+    }
+    if (mode === 'manual' && questions.some(q => !q.question_text.trim())) {
+      toast.error('Fill all technical questions')
+      return
+    }
+    if (mode === 'upload' && !file) {
+      toast.error('Upload technical test PDF/file')
+      return
+    }
+
     setSaving(true)
     try {
-      const response = await api.post('/tests/', { title, description })
-      toast.success('Test created successfully!')
-      window.location.href = `/employee/tests/${response.data.id}/add-questions`
+      const fd = new FormData()
+      fd.append('title', form.title)
+      fd.append('description', form.instructions)
+      fd.append('test_type', 'technical')
+      fd.append('creation_method', mode)
+      fd.append('test_date', form.test_date)
+      fd.append('start_time', form.start_time)
+      fd.append('duration_minutes', form.duration_minutes || 60)
+      fd.append('instructions', form.instructions)
+      if (file) fd.append('question_paper', file)
+
+      const response = await api.post('/tests/', fd, { headers: { 'Content-Type': 'multipart/form-data' } })
+      if (mode === 'manual') {
+        for (const q of questions) {
+          await api.post(`/tests/${response.data.id}/add-question/`, {
+            question_text: q.question_text,
+            option1: '',
+            option2: '',
+            option3: '',
+            option4: '',
+            correct_answer: '',
+          })
+        }
+      }
+      toast.success('Technical test published successfully!')
+      navigate('/employee/tests')
     } catch (err) {
-      toast.error(err.response?.data?.error || 'Failed to create test')
-    } finally { setSaving(false) }
+      toast.error(err.response?.data?.error || 'Failed to create technical test')
+    } finally {
+      setSaving(false)
+    }
   }
 
   return (
     <div className="employee-root">
       <Styles />
-      <PH title="📝 Create Test" sub="Create a new test for your students" />
-      <div className="employee-card" style={{ maxWidth: 600 }}>
+      <PH title="Technical Test" sub="Create coding/descriptive tests manually or upload a question paper" />
+      <div className="employee-card" style={{ maxWidth: 900 }}>
         <div className="employee-card-body" style={{ padding: 22 }}>
           <form onSubmit={handleSubmit}>
+            <div style={{ display: 'inline-flex', gap: 6, padding: 5, border: `1px solid ${T.border}`, borderRadius: 10, marginBottom: 18 }}>
+              {[
+                ['manual', 'Create Questions'],
+                ['upload', 'Upload File'],
+              ].map(([key, label]) => (
+                <button key={key} type="button" className={`employee-btn ${mode === key ? 'employee-btn-primary' : 'employee-btn-ghost'}`} onClick={() => setMode(key)}>
+                  {label}
+                </button>
+              ))}
+            </div>
+
             <div className="employee-fg">
               <label className="employee-label">Test Title <span className="employee-req">*</span></label>
-              <input type="text" className="employee-input" value={title} onChange={e => setTitle(e.target.value)} placeholder="Enter test title" required />
+              <input type="text" className="employee-input" value={form.title} onChange={e => updateForm('title', e.target.value)} placeholder="e.g. Java String Programs" required />
             </div>
+
+            <div className="employee-row-grid-2">
+              <div className="employee-fg">
+                <label className="employee-label">Test Date <span className="employee-req">*</span></label>
+                <input type="date" className="employee-input" value={form.test_date} onChange={e => updateForm('test_date', e.target.value)} required />
+              </div>
+              <div className="employee-fg">
+                <label className="employee-label">Start Time <span className="employee-req">*</span></label>
+                <input type="time" className="employee-input" value={form.start_time} onChange={e => updateForm('start_time', e.target.value)} required />
+              </div>
+              <div className="employee-fg">
+                <label className="employee-label">Duration</label>
+                <input type="number" min="1" className="employee-input" value={form.duration_minutes} onChange={e => updateForm('duration_minutes', e.target.value)} />
+              </div>
+            </div>
+
             <div className="employee-fg">
-              <label className="employee-label">Description</label>
-              <textarea className="employee-input" rows={3} value={description} onChange={e => setDescription(e.target.value)} placeholder="Enter test description (optional)" />
+              <label className="employee-label">Instructions</label>
+              <textarea className="employee-input" rows={3} value={form.instructions} onChange={e => updateForm('instructions', e.target.value)} placeholder="Add coding rules, submission instructions, allowed language, etc." />
             </div>
+
+            {mode === 'manual' ? (
+              <div className="employee-card" style={{ background: '#f8fafc', marginBottom: 18 }}>
+                <div className="employee-card-header">
+                  <h5>Technical Questions ({questions.length})</h5>
+                  <button type="button" className="employee-btn employee-btn-sm employee-btn-teal" onClick={addTechnicalQuestion}>
+                    <i className="fas fa-plus" /> Add Question
+                  </button>
+                </div>
+                <div style={{ padding: 18, display: 'grid', gap: 14 }}>
+                  {questions.map((q, idx) => (
+                    <div key={idx} className="employee-fg" style={{ margin: 0 }}>
+                      <label className="employee-label">Question {idx + 1}</label>
+                      <div style={{ display: 'flex', gap: 8, alignItems: 'flex-start' }}>
+                        <textarea className="employee-input" rows={2} value={q.question_text} onChange={e => updateTechnicalQuestion(idx, e.target.value)} placeholder="Write a program to display palindrome words." />
+                        <button type="button" className="employee-btn employee-btn-sm employee-btn-danger" onClick={() => removeTechnicalQuestion(idx)}>
+                          <i className="fas fa-trash" />
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ) : (
+              <div className="employee-fg">
+                <label className="employee-label">Technical Test File / PDF <span className="employee-req">*</span></label>
+                <input type="file" className="employee-input" accept=".pdf,.doc,.docx,.txt" onChange={e => setFile(e.target.files[0])} />
+                <small className="employee-hint">Upload the technical question paper. PDF is supported.</small>
+              </div>
+            )}
+
             <div style={{ display: 'flex', gap: 12, justifyContent: 'flex-end' }}>
               <button type="button" className="employee-btn employee-btn-ghost" onClick={() => window.history.back()}>Cancel</button>
               <button type="submit" className="employee-btn employee-btn-primary" disabled={saving}>
                 <i className={`fas ${saving ? 'fa-spinner fa-spin' : 'fa-plus'}`} />
-                {saving ? 'Creating...' : 'Create Test'}
+                {saving ? 'Publishing...' : 'Publish Technical Test'}
               </button>
             </div>
           </form>
@@ -4343,12 +4574,11 @@ export function CreateTest() {
     </div>
   )
 }
-
 export function ViewTests() {
   const [tests, setTests] = useState([])
   const [loading, setLoading] = useState(true)
   const [batches, setBatches] = useState([])
-  const [selectedBatch, setSelectedBatch] = useState('')
+  const [selectedBatchIds, setSelectedBatchIds] = useState([])
   const [showAssignModal, setShowAssignModal] = useState(false)
   const [selectedTest, setSelectedTest] = useState(null)
   const [deleteId, setDeleteId] = useState(null)  // Add state for delete confirmation
@@ -4398,24 +4628,36 @@ export function ViewTests() {
 
   const loadBatches = async () => {
     try {
-      const response = await api.get('/batches/')
-      setBatches(response.data.results || response.data || [])
+      const [activeRes, previousRes] = await Promise.all([
+        api.get('/batches/'),
+        api.get('/batches/?access=previous').catch(() => ({ data: { results: [] } })),
+      ])
+      const active = activeRes.data.results || activeRes.data || []
+      const previous = (previousRes.data.results || previousRes.data || []).map(batch => ({ ...batch, accessStatus: 'previous' }))
+      setBatches([...active, ...previous])
     } catch (err) {
       console.error('Failed to load batches', err)
     }
   }
 
+  const toggleAssignBatch = (batchId) => {
+    const id = String(batchId)
+    setSelectedBatchIds(prev => (
+      prev.includes(id) ? prev.filter(item => item !== id) : [...prev, id]
+    ))
+  }
+
   const assignTest = async () => {
-    if (!selectedTest || !selectedBatch) {
-      toast.error('Please select a test and batch')
+    if (!selectedTest || selectedBatchIds.length === 0) {
+      toast.error('Please select at least one batch')
       return
     }
     try {
-      await api.post('/assigned-tests/', { test: selectedTest.id, batch: selectedBatch })
-      toast.success(`Test "${selectedTest.title}" assigned to batch successfully!`)
+      await api.post('/assigned-tests/', { test: selectedTest.id, batch_ids: selectedBatchIds })
+      toast.success(`Test "${selectedTest.title}" assigned to ${selectedBatchIds.length} batch(es) successfully!`)
       setShowAssignModal(false)
       setSelectedTest(null)
-      setSelectedBatch('')
+      setSelectedBatchIds([])
     } catch (err) {
       toast.error(err.response?.data?.error || 'Failed to assign test')
     }
@@ -4439,11 +4681,11 @@ export function ViewTests() {
     <div className="employee-root">
       <Styles />
       <PH
-        title="📋 View & Assign Tests"
-        sub="Manage your tests and assign them to batches"
+        title="Technical Tests"
+        sub="Manage technical tests and assigned batches"
         btn={
           <button className="employee-btn employee-btn-primary" onClick={() => window.location.href = '/employee/tests/create'}>
-            <i className="fas fa-plus" /> Create Test
+            <i className="fas fa-plus" /> Create Technical Test
           </button>
         }
       />
@@ -4459,7 +4701,8 @@ export function ViewTests() {
                 <tr>
                   <th>Title</th>
                   <th>Description</th>
-                  <th>Questions</th>
+                  <th>Type</th>
+                  <th>Questions / Paper</th>
                   <th>Created</th>
                   <th>Actions</th>
                 </tr>
@@ -4468,9 +4711,12 @@ export function ViewTests() {
                 {tests.map(test => (
                   <tr key={test.id}>
                     <td style={{ fontWeight: 600 }}>{test.title}</td>
-                    <td style={{ maxWidth: 200 }}>{test.description || '—'}</td>
+                    <td style={{ maxWidth: 200 }}>{test.description || '�'}</td>
+                    <td><Badge text={test.creation_method === 'upload' ? 'Uploaded File' : 'Manual'} variant={test.creation_method === 'upload' ? 'info' : 'success'} /></td>
                     <td style={{ textAlign: 'center' }}>
-                      <Badge text={test.question_count || 0} variant={test.question_count > 0 ? 'success' : 'warning'} />
+                      {test.creation_method === 'upload'
+                        ? <Badge text={test.question_paper_url ? 'Paper Ready' : 'No File'} variant={test.question_paper_url ? 'success' : 'warning'} />
+                        : <Badge text={test.question_count || 0} variant={test.question_count > 0 ? 'success' : 'warning'} />}
                     </td>
                     <td style={{ fontSize: 12 }}>{new Date(test.created_at).toLocaleDateString('en-IN')}</td>
                     <td>
@@ -4478,8 +4724,8 @@ export function ViewTests() {
                         <button
                           className="employee-btn employee-btn-sm employee-btn-primary"
                           onClick={() => { setSelectedTest(test); setShowAssignModal(true) }}
-                          disabled={test.question_count === 0}
-                          title={test.question_count === 0 ? "Cannot assign test with no questions" : "Assign test to batch"}
+                          disabled={test.creation_method !== 'upload' && test.question_count === 0}
+                          title={test.creation_method !== 'upload' && test.question_count === 0 ? "Cannot assign test with no questions" : "Assign test to batch"}
                         >
                           <i className="fas fa-plus" /> Assign
                         </button>
@@ -4487,7 +4733,7 @@ export function ViewTests() {
                           className="employee-btn employee-btn-sm employee-btn-ghost"
                           onClick={() => window.location.href = `/employee/tests/${test.id}/add-questions`}
                         >
-                          <i className="fas fa-edit" /> Edit
+                          <i className="fas fa-edit" /> Questions
                         </button>
                         <button
                           className="employee-btn employee-btn-sm employee-btn-danger"
@@ -4518,22 +4764,30 @@ export function ViewTests() {
             )}
           </div>
           <div className="employee-fg">
-            <label className="employee-label">Select Batch <span className="employee-req">*</span></label>
-            <select className="employee-select" value={selectedBatch} onChange={e => setSelectedBatch(e.target.value)}>
-              <option value="">-- Select Batch --</option>
-              {batches.map(batch => (
-                <option key={batch.id} value={batch.id}>
-                  {batch.batch_number} - {batch.course_name_display}
-                </option>
+            <label className="employee-label">Select Batches <span className="employee-req">*</span></label>
+            <div style={{ border: `1px solid ${T.border}`, borderRadius: 8, padding: 10, maxHeight: 260, overflowY: 'auto', background: '#fff' }}>
+              {batches.length === 0 ? (
+                <div style={{ color: T.slate, fontSize: 13 }}>No batches found.</div>
+              ) : batches.map(batch => (
+                <label key={batch.id} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '9px 8px', borderRadius: 6, cursor: 'pointer' }}>
+                  <input
+                    type="checkbox"
+                    checked={selectedBatchIds.includes(String(batch.id))}
+                    onChange={() => toggleAssignBatch(batch.id)}
+                  />
+                  <span style={{ fontWeight: 700 }}>{batch.batch_number}</span>
+                  <span style={{ color: T.slate, fontSize: 12 }}>{batch.course_name_display || batch.course_name || ''}</span>
+                </label>
               ))}
-            </select>
+            </div>
+            <small className="employee-hint">{selectedBatchIds.length} batch(es) selected</small>
           </div>
           <div style={{ display: 'flex', gap: 12, justifyContent: 'flex-end', marginTop: 8 }}>
             <button className="employee-btn employee-btn-ghost" onClick={() => setShowAssignModal(false)}>Cancel</button>
             <button
               className="employee-btn employee-btn-primary"
               onClick={assignTest}
-              disabled={selectedTest?.question_count === 0}
+              disabled={selectedTest?.question_count === 0 || selectedBatchIds.length === 0}
             >
               Assign Test
             </button>
@@ -4715,62 +4969,60 @@ export function AddQuestions() {
   const [existingQuestions, setExistingQuestions] = useState([])
 
   const testId = window.location.pathname.split('/')[3]
+  const isTechnicalTest = test?.test_type === 'technical'
 
   useEffect(() => {
-    loadTest()
-    loadExistingQuestions()
+    loadData()
   }, [])
 
-  const loadTest = async () => {
-    try {
-      const response = await api.get(`/tests/${testId}/`)
-      setTest(response.data)
-    } catch (err) {
-      toast.error('Failed to load test')
-    }
-  }
+  const emptyQuestion = (technical = false) => ({
+    id: null,
+    question_text: '',
+    option1: '',
+    option2: '',
+    option3: '',
+    option4: '',
+    correct_answer: technical ? '' : '1'
+  })
 
-  const loadExistingQuestions = async () => {
+  const loadData = async () => {
     try {
-      const response = await api.get(`/tests/${testId}/questions/`)
+      const [testRes, questionRes] = await Promise.all([
+        api.get(`/tests/${testId}/`),
+        api.get(`/tests/${testId}/questions/`)
+      ])
+      const loadedTest = testRes.data
+      setTest(loadedTest)
+
       let existingQ = []
-
-      // Handle different response formats
-      if (response.data.results) {
-        existingQ = response.data.results
-      } else if (Array.isArray(response.data)) {
-        existingQ = response.data
-      } else if (response.data.questions) {
-        existingQ = response.data.questions
-      }
+      if (questionRes.data.results) existingQ = questionRes.data.results
+      else if (Array.isArray(questionRes.data)) existingQ = questionRes.data
+      else if (questionRes.data.questions) existingQ = questionRes.data.questions
 
       setExistingQuestions(existingQ)
 
-      // If there are existing questions, load them into the form
       if (existingQ.length > 0) {
-        const formattedQuestions = existingQ.map(q => ({
+        setQuestions(existingQ.map(q => ({
           id: q.id,
-          question_text: q.question_text,
-          option1: q.option1,
-          option2: q.option2,
+          question_text: q.question_text || '',
+          option1: q.option1 || '',
+          option2: q.option2 || '',
           option3: q.option3 || '',
           option4: q.option4 || '',
-          correct_answer: getCorrectAnswerLetter(q)
-        }))
-        setQuestions(formattedQuestions)
+          correct_answer: loadedTest?.test_type === 'technical' ? '' : getCorrectAnswerLetter(q)
+        })))
       } else {
-        // Start with one empty question if no questions exist
-        setQuestions([{ id: null, question_text: '', option1: '', option2: '', option3: '', option4: '', correct_answer: '1' }])
+        setQuestions([emptyQuestion(loadedTest?.test_type === 'technical')])
       }
     } catch (err) {
-      console.error("Error loading questions:", err)
-      setQuestions([{ id: null, question_text: '', option1: '', option2: '', option3: '', option4: '', correct_answer: '1' }])
+      console.error('Error loading questions:', err)
+      toast.error('Failed to load questions')
+      setQuestions([emptyQuestion(false)])
     } finally {
       setLoading(false)
     }
   }
 
-  // Helper function to get correct answer letter from stored value
   const getCorrectAnswerLetter = (q) => {
     const correctAnswer = q.correct_answer?.toLowerCase()
     if (correctAnswer === 'a' || correctAnswer === '1' || correctAnswer === q.option1) return '1'
@@ -4780,58 +5032,39 @@ export function AddQuestions() {
     return '1'
   }
 
-  const addQuestion = () => {
-    setQuestions([...questions, {
-      id: null,
-      question_text: '',
-      option1: '',
-      option2: '',
-      option3: '',
-      option4: '',
-      correct_answer: '1'
-    }])
-  }
+  const addQuestion = () => setQuestions(prev => [...prev, emptyQuestion(isTechnicalTest)])
 
   const removeQuestion = (index) => {
     if (questions.length === 1) {
-      toast.error('At least one question is required');
+      toast.error('At least one question is required')
       return
     }
-    const newQuestions = [...questions]
-    newQuestions.splice(index, 1)
-    setQuestions(newQuestions)
+    setQuestions(prev => prev.filter((_, idx) => idx !== index))
   }
 
   const updateQuestion = (index, field, value) => {
-    const newQuestions = [...questions]
-    newQuestions[index][field] = value
-    setQuestions(newQuestions)
+    setQuestions(prev => prev.map((item, idx) => idx === index ? { ...item, [field]: value } : item))
   }
 
   const saveQuestions = async () => {
-    // Validate all questions
     for (let i = 0; i < questions.length; i++) {
       const q = questions[i]
       if (!q.question_text.trim()) {
-        toast.error(`Please enter question ${i + 1} text`);
+        toast.error(`Please enter question ${i + 1} text`)
         return
       }
-      if (!q.option1.trim() || !q.option2.trim()) {
-        toast.error(`Please enter at least options 1 and 2 for question ${i + 1}`);
+      if (!isTechnicalTest && (!q.option1.trim() || !q.option2.trim())) {
+        toast.error(`Please enter at least options 1 and 2 for question ${i + 1}`)
         return
       }
     }
 
     setSaving(true)
     try {
-      // Get existing question IDs
       const existingIds = existingQuestions.map(q => q.id)
       const currentIds = questions.filter(q => q.id).map(q => q.id)
-
-      // Find questions to delete (exist in DB but not in current list)
       const idsToDelete = existingIds.filter(id => !currentIds.includes(id))
 
-      // Delete removed questions
       for (const id of idsToDelete) {
         try {
           await api.delete(`/questions/${id}/delete/`)
@@ -4840,9 +5073,15 @@ export function AddQuestions() {
         }
       }
 
-      // Update existing questions and add new ones
       for (const q of questions) {
-        const payload = {
+        const payload = isTechnicalTest ? {
+          question_text: q.question_text,
+          option1: '',
+          option2: '',
+          option3: '',
+          option4: '',
+          correct_answer: ''
+        } : {
           question_text: q.question_text,
           option1: q.option1,
           option2: q.option2,
@@ -4851,38 +5090,31 @@ export function AddQuestions() {
           correct_answer: q.correct_answer
         }
 
-        if (q.id) {
-          // UPDATE existing question
-          await api.put(`/questions/${q.id}/update/`, payload)
-        } else {
-          // ADD new question
-          await api.post(`/tests/${testId}/add-question/`, payload)
-        }
+        if (q.id) await api.put(`/questions/${q.id}/update/`, payload)
+        else await api.post(`/tests/${testId}/add-question/`, payload)
       }
 
       toast.success(`${questions.length} question(s) saved successfully!`)
       window.location.href = '/employee/tests'
     } catch (err) {
-      console.error("Save error:", err)
+      console.error('Save error:', err)
       toast.error(err.response?.data?.error || 'Failed to save questions')
     } finally {
       setSaving(false)
     }
   }
 
-  if (loading) return <div className="employee-root"><Styles /><Spin /></div>
-
   return (
     <div className="employee-root">
       <Styles />
       <PH
-        title={`📝 ${existingQuestions.length > 0 ? 'Edit' : 'Add'} Questions to "${test?.title}"`}
-        sub={existingQuestions.length > 0 ? "Edit existing questions - changes will be saved directly" : "Manually type questions and options for your test"}
+        title={`${existingQuestions.length > 0 ? 'Edit' : 'Add'} ${isTechnicalTest ? 'Technical' : ''} Questions to "${test?.title}"`}
+        sub={isTechnicalTest ? 'Add descriptive or coding questions for this technical test' : existingQuestions.length > 0 ? 'Edit existing questions - changes will be saved directly' : 'Manually type questions and options for your test'}
       />
 
       <div className="employee-card">
         <div className="employee-card-header" style={{ justifyContent: 'space-between' }}>
-          <h5>Questions ({questions.length})</h5>
+          <h5>{isTechnicalTest ? 'Technical Questions' : 'Questions'} ({questions.length})</h5>
           <button className="employee-btn employee-btn-sm employee-btn-teal" onClick={addQuestion}>
             <i className="fas fa-plus" /> Add Question
           </button>
@@ -4903,58 +5135,62 @@ export function AddQuestions() {
                   <label className="employee-label">Question Text *</label>
                   <textarea
                     className="employee-input"
-                    rows={2}
+                    rows={isTechnicalTest ? 4 : 2}
                     value={q.question_text}
                     onChange={e => updateQuestion(idx, 'question_text', e.target.value)}
-                    placeholder="Enter your question here..."
+                    placeholder={isTechnicalTest ? 'Write a Java program to reverse a string.' : 'Enter your question here...'}
                   />
                 </div>
 
-                <div className="employee-row-grid-2">
-                  <div className="employee-fg">
-                    <label className="employee-label">Option 1 *</label>
-                    <div className="employee-input" style={{ display: 'flex', alignItems: 'center', gap: 8, padding: 0 }}>
-                      <span style={{ background: T.amber, padding: '8px 12px', borderRadius: '8px 0 0 8px', color: T.navy, fontWeight: 600 }}>A</span>
-                      <input className="employee-input" style={{ border: 'none', flex: 1 }} value={q.option1} onChange={e => updateQuestion(idx, 'option1', e.target.value)} placeholder="Option 1" />
+                {!isTechnicalTest && (
+                  <>
+                    <div className="employee-row-grid-2">
+                      <div className="employee-fg">
+                        <label className="employee-label">Option 1 *</label>
+                        <div className="employee-input" style={{ display: 'flex', alignItems: 'center', gap: 8, padding: 0 }}>
+                          <span style={{ background: T.amber, padding: '8px 12px', borderRadius: '8px 0 0 8px', color: T.navy, fontWeight: 600 }}>A</span>
+                          <input className="employee-input" style={{ border: 'none', flex: 1 }} value={q.option1} onChange={e => updateQuestion(idx, 'option1', e.target.value)} placeholder="Option 1" />
+                        </div>
+                      </div>
+                      <div className="employee-fg">
+                        <label className="employee-label">Option 2 *</label>
+                        <div className="employee-input" style={{ display: 'flex', alignItems: 'center', gap: 8, padding: 0 }}>
+                          <span style={{ background: T.sage, padding: '8px 12px', borderRadius: '8px 0 0 8px', color: '#fff', fontWeight: 600 }}>B</span>
+                          <input className="employee-input" style={{ border: 'none', flex: 1 }} value={q.option2} onChange={e => updateQuestion(idx, 'option2', e.target.value)} placeholder="Option 2" />
+                        </div>
+                      </div>
+                      <div className="employee-fg">
+                        <label className="employee-label">Option 3</label>
+                        <div className="employee-input" style={{ display: 'flex', alignItems: 'center', gap: 8, padding: 0 }}>
+                          <span style={{ background: T.teal, padding: '8px 12px', borderRadius: '8px 0 0 8px', color: '#fff', fontWeight: 600 }}>C</span>
+                          <input className="employee-input" style={{ border: 'none', flex: 1 }} value={q.option3} onChange={e => updateQuestion(idx, 'option3', e.target.value)} placeholder="Option 3 (optional)" />
+                        </div>
+                      </div>
+                      <div className="employee-fg">
+                        <label className="employee-label">Option 4</label>
+                        <div className="employee-input" style={{ display: 'flex', alignItems: 'center', gap: 8, padding: 0 }}>
+                          <span style={{ background: T.rose, padding: '8px 12px', borderRadius: '8px 0 0 8px', color: '#fff', fontWeight: 600 }}>D</span>
+                          <input className="employee-input" style={{ border: 'none', flex: 1 }} value={q.option4} onChange={e => updateQuestion(idx, 'option4', e.target.value)} placeholder="Option 4 (optional)" />
+                        </div>
+                      </div>
                     </div>
-                  </div>
-                  <div className="employee-fg">
-                    <label className="employee-label">Option 2 *</label>
-                    <div className="employee-input" style={{ display: 'flex', alignItems: 'center', gap: 8, padding: 0 }}>
-                      <span style={{ background: T.sage, padding: '8px 12px', borderRadius: '8px 0 0 8px', color: '#fff', fontWeight: 600 }}>B</span>
-                      <input className="employee-input" style={{ border: 'none', flex: 1 }} value={q.option2} onChange={e => updateQuestion(idx, 'option2', e.target.value)} placeholder="Option 2" />
-                    </div>
-                  </div>
-                  <div className="employee-fg">
-                    <label className="employee-label">Option 3</label>
-                    <div className="employee-input" style={{ display: 'flex', alignItems: 'center', gap: 8, padding: 0 }}>
-                      <span style={{ background: T.teal, padding: '8px 12px', borderRadius: '8px 0 0 8px', color: '#fff', fontWeight: 600 }}>C</span>
-                      <input className="employee-input" style={{ border: 'none', flex: 1 }} value={q.option3} onChange={e => updateQuestion(idx, 'option3', e.target.value)} placeholder="Option 3 (optional)" />
-                    </div>
-                  </div>
-                  <div className="employee-fg">
-                    <label className="employee-label">Option 4</label>
-                    <div className="employee-input" style={{ display: 'flex', alignItems: 'center', gap: 8, padding: 0 }}>
-                      <span style={{ background: T.rose, padding: '8px 12px', borderRadius: '8px 0 0 8px', color: '#fff', fontWeight: 600 }}>D</span>
-                      <input className="employee-input" style={{ border: 'none', flex: 1 }} value={q.option4} onChange={e => updateQuestion(idx, 'option4', e.target.value)} placeholder="Option 4 (optional)" />
-                    </div>
-                  </div>
-                </div>
 
-                <div className="employee-fg">
-                  <label className="employee-label">Correct Answer *</label>
-                  <select
-                    className="employee-select"
-                    style={{ width: 'auto' }}
-                    value={q.correct_answer}
-                    onChange={e => updateQuestion(idx, 'correct_answer', e.target.value)}
-                  >
-                    <option value="1">Option 1 (A)</option>
-                    <option value="2">Option 2 (B)</option>
-                    <option value="3">Option 3 (C)</option>
-                    <option value="4">Option 4 (D)</option>
-                  </select>
-                </div>
+                    <div className="employee-fg">
+                      <label className="employee-label">Correct Answer *</label>
+                      <select
+                        className="employee-select"
+                        style={{ width: 'auto' }}
+                        value={q.correct_answer}
+                        onChange={e => updateQuestion(idx, 'correct_answer', e.target.value)}
+                      >
+                        <option value="1">Option 1 (A)</option>
+                        <option value="2">Option 2 (B)</option>
+                        <option value="3">Option 3 (C)</option>
+                        <option value="4">Option 4 (D)</option>
+                      </select>
+                    </div>
+                  </>
+                )}
               </div>
             </div>
           ))}
@@ -4973,8 +5209,6 @@ export function AddQuestions() {
     </div>
   )
 }
-
-
 
 export function UploadQuiz() {
   const navigate = useNavigate()
@@ -5054,8 +5288,13 @@ export function ManageQuizzes() {
 
   const loadBatches = async () => {
     try {
-      const response = await api.get('/batches/')
-      setBatches(response.data.results || response.data || [])
+      const [activeRes, previousRes] = await Promise.all([
+        api.get('/batches/'),
+        api.get('/batches/?access=previous').catch(() => ({ data: { results: [] } })),
+      ])
+      const active = activeRes.data.results || activeRes.data || []
+      const previous = (previousRes.data.results || previousRes.data || []).map(batch => ({ ...batch, accessStatus: 'previous' }))
+      setBatches([...active, ...previous])
     } catch (err) {
       console.error('Failed to load batches:', err)
       toast.error('Failed to load batches')
@@ -5139,7 +5378,9 @@ export function ManageQuizzes() {
                 <tr>
                   <th>Title</th>
                   <th>Batch</th>
-                  <th>Questions</th>
+                  <th>Uploaded By</th>
+                  <th>Type</th>
+                  <th>Questions / Paper</th>
                   <th>Duration</th>
                   <th>Status</th>
                   <th>Actions</th>
@@ -5150,6 +5391,7 @@ export function ManageQuizzes() {
                   <tr key={quiz.id}>
                     <td style={{ fontWeight: 600 }}>{quiz.title}</td>
                     <td>{quiz.batch_number || <Badge text="Not assigned" variant="warning" />}</td>
+                    <td>{quiz.created_by_name || '-'}<div style={{ marginTop: 4 }}><Badge text={quiz.created_by_trainer_status || 'Current Trainer'} variant={quiz.created_by_trainer_status === 'Previous Trainer' ? 'warning' : 'success'} /></div></td>
                     <td style={{ textAlign: 'center' }}>{quiz.total_questions || 0}</td>
                     <td>{quiz.duration_minutes} min</td>
                     <td>
@@ -5220,7 +5462,7 @@ export function ManageQuizzes() {
                     checked={selectedBatchIds.includes(String(batch.id))}
                     onChange={() => toggleBatchSelection(batch.id)}
                   />
-                  <span style={{ fontWeight: 600 }}>{batch.batch_number}</span>
+                  <span style={{ fontWeight: 600 }}>{batch.batch_number}{batch.accessStatus === 'previous' ? ' - Reassigned' : ''}</span>
                   <span style={{ color: T.slate, fontSize: 12 }}>{batch.course_name_display || batch.course_name || ''}</span>
                 </label>
               ))}

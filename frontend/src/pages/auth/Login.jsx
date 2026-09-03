@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import { useAuth } from '../../context/AuthContext'
 import toast from 'react-hot-toast'
 import { Eye, EyeOff, LogIn, Mail, ArrowLeft, KeyRound, ShieldCheck, Users, GraduationCap } from 'lucide-react'
-import api from '../../api/client'
+import api, { getApiErrorMessage } from '../../api/client'
 import logo from '../../assets/IIE.png'
 
 export default function Login() {
@@ -44,7 +44,8 @@ export default function Login() {
       toast.success('OTP sent to your email!')
       setView('verify')
     } catch (err) {
-      toast.error(err.response?.data?.error || 'Email not found')
+      console.error('Forgot password OTP request failed:', err.response?.status, err.response?.data || err.message)
+      toast.error(getApiErrorMessage(err, 'Unable to send OTP'))
     } finally {
       setFpLoading(false)
     }
@@ -67,7 +68,8 @@ export default function Login() {
       setView('login')
       setFpEmail(''); setFpCode(''); setFpNewPwd(''); setFpConfirmPwd('')
     } catch (err) {
-      toast.error(err.response?.data?.error || 'Invalid OTP or reset failed')
+      console.error('Password reset failed:', err.response?.status, err.response?.data || err.message)
+      toast.error(getApiErrorMessage(err, 'Invalid OTP or reset failed'))
     } finally {
       setFpLoading(false)
     }

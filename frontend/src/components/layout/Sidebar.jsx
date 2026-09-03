@@ -235,9 +235,9 @@ function EmployeeNav() {
         <SubLink to="/employee/material-library" label="Material Library" />
         {/* <SubLink to="/employee/materials" label="View Materials" /> */}
       </NavGroup>
-      <NavGroup icon="fa-pencil-alt" label="Tests">
-        <SubLink to="/employee/tests/create" label="Create Test" />
-        <SubLink to="/employee/tests" label="View & Assign Test" />
+      <NavGroup icon="fa-pencil-alt" label="Technical Tests">
+        <SubLink to="/employee/tests/create" label="Create Technical Test" />
+        <SubLink to="/employee/tests" label="Manage Technical Tests" />
         <SubLink to="/employee/test-results" label="Test Results" />
       </NavGroup>
       <NavGroup icon="fa-pencil-alt" label="Quizzes">
@@ -269,7 +269,6 @@ function StudentNav() {
       <NavItem to="/student/announcements" icon="fa-bullhorn" label="Announcements" />
       <NavItem to="/student/attendance" icon="fa-user-check" label="Attendance" />
       <NavItem to="/student/batches" icon="fa-layer-group" label="My Batches" />
-      <NavItem to="/student/sessions" icon="fa-book-open" label="My Sessions" />
       <NavGroup icon="fa-flask" label="Tests & Quizzes">
         <SubLink to="/student/tests" label="Upcoming Tests" />
         <SubLink to="/student/quiz" label="Excel Quizzes" />
