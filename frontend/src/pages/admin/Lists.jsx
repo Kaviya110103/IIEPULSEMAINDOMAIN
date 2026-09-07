@@ -1038,6 +1038,8 @@ function AssignModalV2({ student, counselorBranch, onClose, onSaved }) {
     staffBatches: {},
     batchByStaff: {},
     staffTimings: {},
+    selectedParallelBatchId: '',
+    parallelMode: 'existing',
     loadingBatches: false,
     loadingBatchNumber: false,
     error: '',
@@ -1062,6 +1064,30 @@ function AssignModalV2({ student, counselorBranch, onClose, onSaved }) {
 
   const courseDetails = (course) => {
     return courses.find(item => String(item.id) === String(course.course_id)) || course
+  }
+
+  const batchCourseId = (batch) => String(batch?.course_name || batch?.course_name_id || batch?.course || '')
+
+  const sameIdSet = (a, b) => {
+    const left = [...new Set((a || []).map(String))].sort()
+    const right = [...new Set((b || []).map(String))].sort()
+    return left.length === right.length && left.every((id, index) => id === right[index])
+  }
+
+  const matchingParallelBatches = (courseId, section) => {
+    if (!section || section.staffIds.length < 2) return []
+    const unique = new Map()
+    Object.values(section.staffBatches || {}).flat().forEach(batch => {
+      if (batch?.id) unique.set(String(batch.id), batch)
+    })
+    return Array.from(unique.values()).filter(batch => {
+      const trainerIds = batch.trainer_ids || batch.trainers?.map(trainer => trainer.id) || []
+      return (
+        batchCourseId(batch) === String(courseId) &&
+        trainerIds.length > 1 &&
+        sameIdSet(trainerIds, section.staffIds)
+      )
+    })
   }
 
   const updateCreateForm = (course, patch) => {
@@ -1138,7 +1164,14 @@ function AssignModalV2({ student, counselorBranch, onClose, onSaved }) {
       delete staffTimings[id]
       delete batchByStaff[id]
     }
-    setCourseSection(courseId, { staffIds, staffTimings, batchByStaff, error: '' })
+    setCourseSection(courseId, {
+      staffIds,
+      staffTimings,
+      batchByStaff,
+      selectedParallelBatchId: '',
+      parallelMode: staffIds.length > 1 ? section.parallelMode || 'existing' : 'existing',
+      error: '',
+    })
     if (staffIds.length > 1) await ensureBatchNumber(courseId)
     await loadStaffBatches(courseId, staffIds)
   }
@@ -1200,6 +1233,12 @@ function AssignModalV2({ student, counselorBranch, onClose, onSaved }) {
         const id = section.staffIds[0]
         if (!section.batchByStaff[id]) nextErrors[courseId] = 'Select an existing batch for the selected staff.'
       } else {
+        const hasSelectedExisting = section.parallelMode !== 'new' && section.selectedParallelBatchId
+        if (hasSelectedExisting) return
+        if (section.parallelMode !== 'new') {
+          nextErrors[courseId] = 'Select an existing parallel batch or choose Create New Parallel Batch.'
+          return
+        }
         const missingTiming = section.staffIds.find(id => !section.staffTimings[id])
         if (missingTiming) nextErrors[courseId] = 'Select timing for every selected staff.'
         else if (!section.createForm.start_date) nextErrors[courseId] = 'Select batch start date.'
@@ -1241,6 +1280,17 @@ function AssignModalV2({ student, counselorBranch, onClose, onSaved }) {
           continue
         }
 
+        if (section.parallelMode !== 'new' && section.selectedParallelBatchId) {
+          await api.post(`/students/${student.student_id}/assign-staff/`, {
+            staff_id: section.staffIds[0],
+            staff_ids: section.staffIds,
+            staff_batch_map: Object.fromEntries(section.staffIds.map(id => [id, section.selectedParallelBatchId])),
+            course_id: courseId,
+            batch_ids: [section.selectedParallelBatchId],
+          })
+          continue
+        }
+
         const batchNumber = section.createForm.batch_number || await ensureBatchNumber(courseId)
         if (!batchNumber) throw new Error('Unable to generate batch number.')
         const staffAssignments = section.staffIds.map(id => ({
@@ -1256,12 +1306,40 @@ function AssignModalV2({ student, counselorBranch, onClose, onSaved }) {
         fd.append('branch', counselorBranch)
         fd.append('staff_assignments', JSON.stringify(staffAssignments))
         const res = await api.post('/batches/create/', fd)
+        const createdBatch = res.data.batch
+        const createdBatchWithTrainers = {
+          ...createdBatch,
+          trainer_ids: section.staffIds.map(Number),
+          trainers: section.staffIds.map(id => {
+            const staff = emps.find(emp => String(emp.id) === String(id))
+            return {
+              id: Number(id),
+              name: `${staff?.first_name || ''} ${staff?.last_name || ''}`.trim(),
+              batch_timing: section.staffTimings[id],
+            }
+          }),
+        }
+        setCourseSection(courseId, current => {
+          const staffBatches = { ...current.staffBatches }
+          current.staffIds.forEach(id => {
+            const existing = staffBatches[id] || []
+            staffBatches[id] = existing.some(batch => String(batch.id) === String(createdBatch.id))
+              ? existing
+              : [createdBatchWithTrainers, ...existing]
+          })
+          return {
+            ...current,
+            staffBatches,
+            selectedParallelBatchId: String(createdBatch.id),
+            parallelMode: 'existing',
+          }
+        })
         await api.post(`/students/${student.student_id}/assign-staff/`, {
           staff_id: section.staffIds[0],
           staff_ids: section.staffIds,
-          staff_batch_map: {},
+          staff_batch_map: Object.fromEntries(section.staffIds.map(id => [id, createdBatch.id])),
           course_id: courseId,
-          batch_ids: [res.data.batch.id],
+          batch_ids: [createdBatch.id],
         })
       }
       toast.success('Batches assigned successfully!')
@@ -1295,6 +1373,8 @@ function AssignModalV2({ student, counselorBranch, onClose, onSaved }) {
           const detail = courseDetails(course)
           const isParallel = section.staffIds.length > 1
           const isSingle = section.staffIds.length === 1
+          const parallelOptions = matchingParallelBatches(courseId, section)
+          const creatingNewParallel = isParallel && section.parallelMode === 'new'
           return (
             <div key={courseId} className="ls-card" style={{ overflow: 'visible' }}>
               <div className="ls-card-header" style={{ alignItems: 'flex-start', gap: 12 }}>
@@ -1352,9 +1432,51 @@ function AssignModalV2({ student, counselorBranch, onClose, onSaved }) {
                   <>
                     <div className="ls-alert-info">
                       <i className="fas fa-layer-group" style={{ marginRight: 8 }} />
-                      Multiple staff selected. One new shared batch will be created with separate timing for each staff.
+                      Multiple staff selected. Select an existing common parallel batch, or create a new shared batch if needed.
                     </div>
-                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: 12 }}>
+                    <FG label="Available Parallel Batches">
+                      {section.loadingBatches ? (
+                        <div style={{ padding: 12, textAlign: 'center' }}><i className="fas fa-spinner fa-spin" style={{ color: T.amber }} /> Checking parallel batches...</div>
+                      ) : parallelOptions.length > 0 ? (
+                        <div style={{ display: 'grid', gap: 8 }}>
+                          {parallelOptions.map(batch => (
+                            <label key={batch.id} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 12px', borderRadius: 10, border: `1px solid ${String(section.selectedParallelBatchId) === String(batch.id) ? T.amber : 'rgba(255,255,255,.12)'}`, background: String(section.selectedParallelBatchId) === String(batch.id) ? 'rgba(244,169,64,.14)' : 'rgba(255,255,255,.04)', cursor: 'pointer' }}>
+                              <input
+                                type="radio"
+                                checked={String(section.selectedParallelBatchId) === String(batch.id) && section.parallelMode !== 'new'}
+                                onChange={() => setCourseSection(courseId, current => ({ ...current, selectedParallelBatchId: String(batch.id), parallelMode: 'existing', error: '' }))}
+                                style={{ width: 16, height: 16, accentColor: T.amber }}
+                              />
+                              <span style={{ display: 'grid', gap: 2 }}>
+                                <strong>{batch.batch_number}</strong>
+                                <small style={{ color: T.slate }}>
+                                  {(batch.trainers || []).map(trainer => `${trainer.name}${trainer.batch_timing ? ` - ${trainer.batch_timing}` : ''}`).join(' | ') || batch.batch_timing}
+                                </small>
+                              </span>
+                            </label>
+                          ))}
+                        </div>
+                      ) : (
+                        <div className="ls-alert-warning" style={{ margin: 0 }}>
+                          No existing parallel batch found for this course and selected staff combination.
+                        </div>
+                      )}
+                      <button
+                        className="ls-btn ls-btn-ghost"
+                        type="button"
+                        style={{ marginTop: 10 }}
+                        onClick={() => setCourseSection(courseId, current => ({
+                          ...current,
+                          selectedParallelBatchId: '',
+                          parallelMode: current.parallelMode === 'new' ? 'existing' : 'new',
+                          error: '',
+                        }))}
+                      >
+                        <i className={`fas ${section.parallelMode === 'new' ? 'fa-list' : 'fa-plus'}`} />
+                        {section.parallelMode === 'new' ? 'Use Existing Batch' : 'Create New Parallel Batch'}
+                      </button>
+                    </FG>
+                    {creatingNewParallel && <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: 12 }}>
                       {section.staffIds.map(id => {
                         const staff = emps.find(emp => String(emp.id) === String(id))
                         const schedules = section.staffBatches[id] || []
@@ -1371,8 +1493,8 @@ function AssignModalV2({ student, counselorBranch, onClose, onSaved }) {
                           </div>
                         )
                       })}
-                    </div>
-                    <div className="ls-row-grid-2">
+                    </div>}
+                    {creatingNewParallel && <div className="ls-row-grid-2">
                       <FG label="Batch ID" hint={section.loadingBatchNumber ? 'Generating...' : 'Auto-generated based on branch'}>
                         <Inp value={section.createForm.batch_number} readOnly placeholder="Auto-generated" />
                       </FG>
@@ -1388,7 +1510,7 @@ function AssignModalV2({ student, counselorBranch, onClose, onSaved }) {
                       <FG label="End Date" hint="Calculated from selected course duration">
                         <Inp type="date" value={section.createForm.end_date} readOnly />
                       </FG>
-                    </div>
+                    </div>}
                   </>
                 )}
 
