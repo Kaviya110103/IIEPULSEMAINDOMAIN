@@ -73,6 +73,7 @@ urlpatterns = [
     path('api/batches/', v.BatchListCreateView.as_view()),
     path('api/batches/create/', v.BatchCreateView.as_view()),
     path('api/batches/<int:pk>/', v.BatchDetailView.as_view()),
+    path('api/batches/<int:batch_id>/rename-code/', v.rename_batch_code),
     path('api/batches/<int:batch_id>/students/', v.get_batch_students),
     path('api/batches/<int:batch_id>/sessions/', v.batch_sessions),
     path('api/batches/<int:batch_id>/sessions-logsheet/', v.get_batch_sessions_with_logsheet),

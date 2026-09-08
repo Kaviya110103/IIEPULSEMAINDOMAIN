@@ -60,6 +60,8 @@ const addCalendarMonths = (startDate, months) => {
   return formatDateInput(new Date(targetYear, targetMonth, Math.min(day, lastDay)))
 }
 
+const getBatchDisplayName = (batch) => batch?.batch_code || batch?.display_name || batch?.batch_number || 'N/A'
+
 const calculateBatchEndDate = (duration, startDate) => {
   if (!startDate) return { endDate: '', error: '' }
   if (!isValidDateInput(startDate)) return { endDate: '', error: 'Enter a valid start date in YYYY-MM-DD format.' }
@@ -1418,7 +1420,7 @@ function AssignModalV2({ student, counselorBranch, onClose, onSaved }) {
                           <label style={{ fontWeight: 800 }}>{staff?.first_name} {staff?.last_name || ''}</label>
                           <Sel value={section.batchByStaff[id] || ''} onChange={e => setCourseSection(courseId, current => ({ ...current, batchByStaff: { ...current.batchByStaff, [id]: e.target.value }, error: '' }))}>
                             <option value="">Select Batch</option>
-                            {options.map(batch => <option key={batch.id} value={batch.id}>{batch.batch_number} - {batch.batch_timing}</option>)}
+                            {options.map(batch => <option key={batch.id} value={batch.id}>{getBatchDisplayName(batch)} - {batch.batch_timing}</option>)}
                           </Sel>
                           {options.length === 0 && <span className="ls-hint">No existing batches found for this staff.</span>}
                         </div>
@@ -1448,7 +1450,7 @@ function AssignModalV2({ student, counselorBranch, onClose, onSaved }) {
                                 style={{ width: 16, height: 16, accentColor: T.amber }}
                               />
                               <span style={{ display: 'grid', gap: 2 }}>
-                                <strong>{batch.batch_number}</strong>
+                                <strong>{getBatchDisplayName(batch)}</strong>
                                 <small style={{ color: T.slate }}>
                                   {(batch.trainers || []).map(trainer => `${trainer.name}${trainer.batch_timing ? ` - ${trainer.batch_timing}` : ''}`).join(' | ') || batch.batch_timing}
                                 </small>
@@ -1488,7 +1490,7 @@ function AssignModalV2({ student, counselorBranch, onClose, onSaved }) {
                               {timings.map(timing => <option key={timing} value={timing}>{timing}</option>)}
                             </Sel>
                             <small style={{ color: T.slate }}>
-                              {section.loadingBatches ? 'Loading schedules...' : schedules.length ? schedules.slice(0, 3).map(batch => `${batch.batch_number} - ${batch.batch_timing}`).join(' | ') : 'No existing batches found.'}
+                              {section.loadingBatches ? 'Loading schedules...' : schedules.length ? schedules.slice(0, 3).map(batch => `${getBatchDisplayName(batch)} - ${batch.batch_timing}`).join(' | ') : 'No existing batches found.'}
                             </small>
                           </div>
                         )
@@ -1817,7 +1819,7 @@ function AssignModal({ student, counselorBranch, onClose, onSaved }) {
                   </div>
                   {assigned.length > 0 && (
                     <div style={{ marginTop: 6, paddingLeft: 26, color: T.slate, fontSize: 12 }}>
-                      Assigned: {assigned.map(b => `${b.batch_number} (${b.batch_timing})`).join(', ')}
+                      Assigned: {assigned.map(b => `${getBatchDisplayName(b)} (${b.batch_timing})`).join(', ')}
                     </div>
                   )}
                 </label>
@@ -1873,7 +1875,7 @@ function AssignModal({ student, counselorBranch, onClose, onSaved }) {
                         <option value="">Select Batch</option>
                         {options.map(b => (
                           <option key={b.id} value={b.id}>
-                            {b.batch_number} - {b.batch_timing}
+                            {getBatchDisplayName(b)} - {b.batch_timing}
                           </option>
                         ))}
                       </Sel>
@@ -1905,7 +1907,7 @@ function AssignModal({ student, counselorBranch, onClose, onSaved }) {
                     {timings.map(t => <option key={t} value={t}>{t}</option>)}
                   </Sel>
                   <div style={{ marginTop: 8, color: T.slate, fontSize: 12 }}>
-                    {loadingBatches ? 'Loading existing timings...' : schedules.length === 0 ? 'No existing batches found.' : schedules.slice(0, 4).map(b => `${b.batch_number} - ${b.batch_timing}`).join(' | ')}
+                    {loadingBatches ? 'Loading existing timings...' : schedules.length === 0 ? 'No existing batches found.' : schedules.slice(0, 4).map(b => `${getBatchDisplayName(b)} - ${b.batch_timing}`).join(' | ')}
                   </div>
                 </div>
               )
@@ -2245,14 +2247,14 @@ export function BatchesList({ staffView = false }) {
   const branches = [...new Set(data.map(b => b.branch).filter(b => b && b !== '—'))]
 
   // Filter batches based on search and branch
-  const batchOptions = [...new Set(data.map(b => b.batch_number).filter(Boolean))].sort()
+  const batchOptions = [...new Set(data.map(b => getBatchDisplayName(b)).filter(Boolean))].sort()
   const courseOptions = [...new Set(data.map(b => b.course_name_display).filter(Boolean))].sort()
   const trainerOptions = [...new Set(data.map(b => b.faculty_name).filter(Boolean))].sort()
 
   const filteredData = data.filter(batch => {
     const searchLower = search.toLowerCase()
     const matchesSearch = search === '' || (
-      batch.batch_number?.toLowerCase().includes(searchLower) ||
+      getBatchDisplayName(batch).toLowerCase().includes(searchLower) ||
       batch.course_name_display?.toLowerCase().includes(searchLower) ||
       batch.faculty_name?.toLowerCase().includes(searchLower) ||
       batch.branch?.toLowerCase().includes(searchLower) ||
@@ -2260,7 +2262,7 @@ export function BatchesList({ staffView = false }) {
       batch.course_type?.toLowerCase().includes(searchLower)
     )
     const matchesBranch = !branchFilter || batch.branch === branchFilter
-    const matchesBatch = !batchFilter || batch.batch_number === batchFilter
+    const matchesBatch = !batchFilter || getBatchDisplayName(batch) === batchFilter
     const matchesCourse = !courseFilter || batch.course_name_display === courseFilter
     const matchesTrainer = !trainerFilter || batch.faculty_name === trainerFilter
     return matchesSearch && matchesBranch && matchesBatch && matchesCourse && matchesTrainer
@@ -2359,7 +2361,7 @@ export function BatchesList({ staffView = false }) {
                 {filteredData.map((b, i) => (
                   <tr key={b.id}>
                     <td style={{ color: T.slate, fontSize: 12 }}>{i + 1}</td>
-                    <td><Badge text={b.batch_number} variant="primary" /></td>
+                    <td><Badge text={getBatchDisplayName(b)} variant="primary" /></td>
                     <td>{b.course_type ? <Badge text={b.course_type} variant="info" /> : '—'}</td>
                     <td style={{ fontWeight: 500, fontSize: 13 }}>{b.course_name_display}</td>
                     <td style={{ fontSize: 13, fontWeight: 600, color: T.sage }}>
@@ -2685,7 +2687,7 @@ api.get(url).then(r => setEmps(r.data.results || r.data))
                       {checked && (
                         <div style={{ marginTop: 8, paddingLeft: 26, color: T.slate, fontSize: 12 }}>
                           {schedules.length === 0 ? 'No existing batches found.' : schedules.slice(0, 4).map(b => (
-                            <div key={b.id}>{b.batch_number} - {b.batch_timing}</div>
+                            <div key={b.id}>{getBatchDisplayName(b)} - {b.batch_timing}</div>
                           ))}
                         </div>
                       )}

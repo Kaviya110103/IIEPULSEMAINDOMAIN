@@ -84,6 +84,7 @@ class Batches ( models.Model ) :
     ]
     
     batch_number = models.CharField ( max_length = 50 , unique = True )
+    batch_code = models.CharField ( max_length = 120 , unique = True , blank = True , null = True )
     course_type = models.CharField ( max_length = 50 )
     course_name = models.ForeignKey ( Courses , on_delete = models.CASCADE )
     faculty = models.ForeignKey ( Employee , on_delete = models.CASCADE )

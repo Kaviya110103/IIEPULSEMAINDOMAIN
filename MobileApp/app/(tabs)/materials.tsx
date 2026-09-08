@@ -20,6 +20,8 @@ type MaterialItem = {
   uploaded_at?: string;
   uploaded_by_name?: string;
   batch_number?: string;
+  batch_code?: string;
+  display_name?: string;
 };
 
 export default function MaterialsScreen() {
@@ -107,7 +109,7 @@ export default function MaterialsScreen() {
               </View>
               <View style={styles.cardTitleBlock}>
                 <Text style={styles.title}>{item.title}</Text>
-                <Text style={styles.batchPill}>Batch {item.batch_number || "N/A"}</Text>
+                <Text style={styles.batchPill}>Batch {item.batch_code || item.display_name || item.batch_number || "N/A"}</Text>
               </View>
             </View>
 

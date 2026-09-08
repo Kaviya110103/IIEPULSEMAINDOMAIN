@@ -15,6 +15,8 @@ type AttendanceRecord = {
   id: number | string;
   date: string;
   batch_number?: string;
+  batch_code?: string;
+  display_name?: string;
   marked_by?: string;
   status: "Present" | "Absent";
   remarks?: string | null;
@@ -217,7 +219,7 @@ export default function Attendance() {
                         {formatDate(item.date)}
                       </Text>
                       <Text style={[styles.tableCell, styles.batchCell]}>
-                        {item.batch_number || "-"}
+                        {item.batch_code || item.display_name || item.batch_number || "-"}
                       </Text>
                       <Text style={[styles.tableCell, styles.facultyCell]}>
                         {item.marked_by || "-"}

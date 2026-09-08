@@ -29,6 +29,8 @@ const attendanceSessionText = (record) => {
   return '-'
 }
 
+const getBatchDisplayName = (batch) => batch?.batch_code || batch?.display_name || batch?.batch_number || 'N/A'
+
 const css = `
   @import url('https://fonts.googleapis.com/css2?family=Playfair+Display:wght@600;700&family=DM+Sans:wght@300;400;500;600&display=swap');
 
@@ -787,6 +789,9 @@ export function ViewBatches() {
 
 // ─── Batch Card ────────────────────────────────────────────────────────────
 function BatchCard({ batch, onViewSessions, onViewStudents, accessStatus = 'active' }) {
+  const [renameOpen, setRenameOpen] = useState(false)
+  const [batchCode, setBatchCode] = useState(getBatchDisplayName(batch))
+  const [savingCode, setSavingCode] = useState(false)
   const isPrevious = accessStatus === 'previous' || batch.accessStatus === 'previous'
   const btn = (label, icon, color, onClick) => (
     <button
@@ -800,13 +805,45 @@ function BatchCard({ batch, onViewSessions, onViewStudents, accessStatus = 'acti
     </button>
   )
 
+  const saveBatchCode = async () => {
+    const nextCode = String(batchCode || '').trim()
+    if (!nextCode) { toast.error('Batch code cannot be empty'); return }
+    setSavingCode(true)
+    try {
+      const res = await api.patch(`/batches/${batch.id}/rename-code/`, { batch_code: nextCode })
+      batch.batch_code = res.data.batch?.batch_code || nextCode
+      setBatchCode(batch.batch_code)
+      setRenameOpen(false)
+      toast.success('Batch code updated')
+    } catch (err) {
+      toast.error(err.response?.data?.error || 'Failed to update batch code')
+    } finally {
+      setSavingCode(false)
+    }
+  }
+
   return (
     <div className="employee-batch-card">
       <div className="employee-batch-header">
-        <h4>{batch.batch_number}</h4>
-        <p>{batch.course_name_display}</p>
+        <div>
+          <h4>{batchCode}</h4>
+          <p>{batch.course_name_display}</p>
+        </div>
+        <button type="button" className="employee-btn employee-btn-sm employee-btn-ghost" onClick={() => setRenameOpen(true)} title="Rename batch"><i className="fas fa-pen" /> Rename</button>
         {isPrevious && <Badge text="Previous Trainer" variant="warning" />}
       </div>
+      {renameOpen && (
+        <Modal open onClose={() => setRenameOpen(false)} title="Rename Batch" size="sm">
+          <div style={{ display: 'grid', gap: 12 }}>
+            <label className="employee-label">Batch Code</label>
+            <input className="employee-input" value={batchCode} onChange={e => setBatchCode(e.target.value)} autoFocus />
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10 }}>
+              <button className="employee-btn employee-btn-ghost" onClick={() => setRenameOpen(false)}>Cancel</button>
+              <button className="employee-btn employee-btn-primary" onClick={saveBatchCode} disabled={savingCode}>{savingCode ? 'Saving...' : 'Save'}</button>
+            </div>
+          </div>
+        </Modal>
+      )}
       <div className="employee-batch-body">
         <div className="employee-batch-row">
           <span>Course Type:</span>
@@ -902,7 +939,7 @@ function AttendanceModal({ batch, onClose }) {
   }
 
   return (
-    <Modal open onClose={onClose} size="xl" title={`Attendance Records - ${batch.batch_number} - ${batch.course_name_display}`}>
+    <Modal open onClose={onClose} size="xl" title={`Attendance Records - ${getBatchDisplayName(batch)} - ${batch.course_name_display}`}>
       {loading ? <Spin /> : records.length === 0 ? (
         <Empty msg="No attendance records found" icon="fa-clipboard-list" />
       ) : (
@@ -1076,7 +1113,7 @@ export function AttendanceHistoryPage() {
               <select className="employee-select" value={selectedBatch} onChange={e => { setSelectedBatch(e.target.value); setStudentFilter(''); setStaffFilter('all') }} disabled={loadingBatches}>
                 <option value="">Select batch</option>
                 {batches.map(batch => (
-                  <option key={batch.id} value={batch.id}>{batch.batch_number} - {batch.course_name_display}</option>
+                  <option key={batch.id} value={batch.id}>{getBatchDisplayName(batch)} - {batch.course_name_display}</option>
                 ))}
               </select>
             </div>
@@ -1156,7 +1193,7 @@ export function AttendanceHistoryPage() {
       )}
 
       <div className="employee-card">
-        <SH title={selectedBatchDetails ? `${selectedBatchDetails.batch_number} Attendance` : 'Attendance History'} count={filteredRecords.length} />
+        <SH title={selectedBatchDetails ? `${getBatchDisplayName(selectedBatchDetails)} Attendance` : 'Attendance History'} count={filteredRecords.length} />
         {loadingBatches || loadingRecords ? <Spin /> : !selectedBatch ? (
           <Empty msg="Select a batch to view attendance history" icon="fa-clipboard-list" />
         ) : records.length === 0 ? (
@@ -1436,7 +1473,7 @@ function SessionsModal({ batch, onClose }) {
   }
 
   return (
-    <Modal open onClose={onClose} size="lg" title={`📋 Sessions — ${batch.batch_number} · ${batch.course_name_display}`}>
+    <Modal open onClose={onClose} size="lg" title={`📋 Sessions — ${getBatchDisplayName(batch)} · ${batch.course_name_display}`}>
       {loading ? <Spin /> : (
         <>
           <div style={{ marginBottom: 16 }}>
@@ -1641,7 +1678,7 @@ function StudentsModal({ batch, onClose }) {
   )
 
   return (
-    <Modal open onClose={onClose} size="xl" title={`👥 Students — ${batch.batch_number} · ${batch.course_name_display}`}>
+    <Modal open onClose={onClose} size="xl" title={`👥 Students — ${getBatchDisplayName(batch)} · ${batch.course_name_display}`}>
       <div className="employee-fg" style={{ marginBottom: 16 }}>
         <input
           className="employee-input"
@@ -1795,7 +1832,7 @@ export function MarkAttendance() {
               <label className="employee-label">🎓 Select Batch:</label>
               <select className="employee-select" value={selectedBatch} onChange={e => setSelectedBatch(e.target.value)}>
                 <option value="">-- Select Batch --</option>
-                {batches.map(b => <option key={b.id} value={b.id}>{b.batch_number} — {b.course_name_display} ({b.batch_timing})</option>)}
+                {batches.map(b => <option key={b.id} value={b.id}>{getBatchDisplayName(b)} — {b.course_name_display} ({b.batch_timing})</option>)}
               </select>
             </div>
             <div className="employee-fg">
@@ -2104,7 +2141,7 @@ function MaterialUploadModal({ onClose, onSaved, material = null }) {
           <label className="employee-label">Batch <span className="employee-req">*</span></label>
           <select className="employee-select" value={form.batch} onChange={e => setForm(p => ({ ...p, batch: e.target.value }))} required>
             <option value="">Select batch…</option>
-            {batches.map(b => <option key={b.id} value={b.id}>{b.batch_number} - {b.course_name_display}{b.accessStatus === 'previous' ? ' - Reassigned' : ''}</option>)}
+            {batches.map(b => <option key={b.id} value={b.id}>{getBatchDisplayName(b)} - {b.course_name_display}{b.accessStatus === 'previous' ? ' - Reassigned' : ''}</option>)}
           </select>
         </div>
         <div className="employee-fg">
@@ -2240,7 +2277,7 @@ export function MaterialLibrary() {
             <label className="employee-label">Batch</label>
             <select className="employee-select" value={filters.batch} onChange={e => setFilters(p => ({ ...p, batch: e.target.value }))}>
               <option value="">All batches</option>
-              {filteredBatches.map(batch => <option key={batch.id} value={batch.id}>{batch.batch_number}{batch.accessStatus === 'previous' ? ' - Reassigned' : ''}</option>)}
+              {filteredBatches.map(batch => <option key={batch.id} value={batch.id}>{getBatchDisplayName(batch)}{batch.accessStatus === 'previous' ? ' - Reassigned' : ''}</option>)}
             </select>
           </div>
           <div style={{ display: 'flex', gap: 10 }}>
@@ -2288,7 +2325,7 @@ export function MaterialLibrary() {
                         <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
                           {material.assigned_batches.map(batch => (
                             <span key={batch.id} className="employee-badge" style={{ background: '#e0f7f5', color: '#1a7a72' }}>
-                              {batch.batch_number} - {batch.branch}
+                              {getBatchDisplayName(batch)} - {batch.branch}
                             </span>
                           ))}
                         </div>
@@ -2431,7 +2468,7 @@ function LibraryAssignModal({ material, materials, batches, onClose, onSaved }) 
           <label className="employee-label">Target Batch <span className="employee-req">*</span></label>
           <select className="employee-select" value={form.batch} onChange={e => setForm(p => ({ ...p, batch: e.target.value }))} required disabled={!form.branch}>
             <option value="">Select batch...</option>
-            {filteredBatches.map(batch => <option key={batch.id} value={batch.id}>{batch.batch_number} - {batch.course_name_display}{batch.accessStatus === 'previous' ? ' - Reassigned' : ''}</option>)}
+            {filteredBatches.map(batch => <option key={batch.id} value={batch.id}>{getBatchDisplayName(batch)} - {batch.course_name_display}{batch.accessStatus === 'previous' ? ' - Reassigned' : ''}</option>)}
           </select>
         </div>
         <div style={{ display: 'flex', gap: 12, justifyContent: 'flex-end', marginTop: 8 }}>
@@ -3946,7 +3983,7 @@ export function TrainerAnnouncements() {
         <label className="employee-label">Select Batch <span className="employee-req">*</span></label>
         <select className="employee-select" value={form.specific_batch} onChange={e => { setSelectedStudents([]); setForm(p => ({ ...p, specific_batch: e.target.value })) }}>
           <option value="">Choose batch</option>
-          {batches.map(batch => <option key={batch.id} value={batch.id}>{batch.display_text || batch.batch_number}</option>)}
+          {batches.map(batch => <option key={batch.id} value={batch.id}>{batch.display_text || getBatchDisplayName(batch)}</option>)}
         </select>
       </div>
       {form.recipient_type === 'specific_student' && (
@@ -4775,7 +4812,7 @@ export function ViewTests() {
                     checked={selectedBatchIds.includes(String(batch.id))}
                     onChange={() => toggleAssignBatch(batch.id)}
                   />
-                  <span style={{ fontWeight: 700 }}>{batch.batch_number}</span>
+                  <span style={{ fontWeight: 700 }}>{getBatchDisplayName(batch)}</span>
                   <span style={{ color: T.slate, fontSize: 12 }}>{batch.course_name_display || batch.course_name || ''}</span>
                 </label>
               ))}
@@ -4884,7 +4921,7 @@ export function TestResults() {
             <option value="">— Select a Batch —</option>
             {batches.map(batch => (
               <option key={batch.id} value={batch.id}>
-                {batch.batch_number} — {batch.course_name_display}
+                {getBatchDisplayName(batch)} — {batch.course_name_display}
               </option>
             ))}
           </select>
@@ -5462,7 +5499,7 @@ export function ManageQuizzes() {
                     checked={selectedBatchIds.includes(String(batch.id))}
                     onChange={() => toggleBatchSelection(batch.id)}
                   />
-                  <span style={{ fontWeight: 600 }}>{batch.batch_number}{batch.accessStatus === 'previous' ? ' - Reassigned' : ''}</span>
+                  <span style={{ fontWeight: 600 }}>{getBatchDisplayName(batch)}{batch.accessStatus === 'previous' ? ' - Reassigned' : ''}</span>
                   <span style={{ color: T.slate, fontSize: 12 }}>{batch.course_name_display || batch.course_name || ''}</span>
                 </label>
               ))}

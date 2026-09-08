@@ -763,6 +763,51 @@ def generate_batch_number(branch):
     return f'{prefix}-BAT{next_num:03d}'
 
 
+def _batch_code_part(value, fallback='Batch', max_length=40):
+    cleaned = re.sub(r'[^A-Za-z0-9]+', '', str(value or '').strip())
+    return (cleaned or fallback)[:max_length]
+
+
+def _batch_time_code(batch_timing):
+    match = re.search(r'(\d{1,2})(?::(\d{2}))?\s*(AM|PM)', str(batch_timing or ''), re.IGNORECASE)
+    if not match:
+        return 'TIME'
+    hour, minute, suffix = match.groups()
+    minute = minute if minute and minute != '00' else ''
+    return f"{int(hour)}{minute}{suffix.upper()}"
+
+
+def _trainer_name_for_code(trainer):
+    if not trainer:
+        return 'Trainer'
+    return f"{trainer.first_name or ''}{trainer.last_name or ''}" or getattr(trainer.user, 'username', '') or 'Trainer'
+
+
+def generate_batch_code(course, trainer, start_date, batch_timing, exclude_batch_id=None):
+    if isinstance(start_date, str):
+        try:
+            start_date = datetime.strptime(start_date[:10], '%Y-%m-%d').date()
+        except ValueError:
+            start_date = None
+    month = start_date.strftime('%b').upper() if start_date else 'MONTH'
+    course_name = getattr(course, 'course_name', None) or str(course or 'Course')
+    base = '-'.join([
+        _batch_time_code(batch_timing),
+        month,
+        _batch_code_part(course_name, 'Course'),
+        _batch_code_part(_trainer_name_for_code(trainer), 'Trainer'),
+    ])
+    candidate = base
+    suffix = 2
+    qs = Batches.objects.all()
+    if exclude_batch_id:
+        qs = qs.exclude(id=exclude_batch_id)
+    while qs.filter(batch_code__iexact=candidate).exists():
+        candidate = f"{base}-{suffix}"
+        suffix += 1
+    return candidate
+
+
 def parse_course_duration(duration):
     value = str(duration or '').strip().lower()
     match = re.fullmatch(r'([1-9]\d*)\s*(day|days|month|months)', value)
@@ -2242,6 +2287,7 @@ class BatchListCreateView(generics.ListAPIView):
         )
         return qs.filter(
             Q(batch_number__icontains=search) |
+            Q(batch_code__icontains=search) |
             Q(course_name__course_name__icontains=search) |
             Q(course_type__icontains=search) |
             Q(batch_timing__icontains=search) |
@@ -2369,6 +2415,7 @@ class BatchCreateView(APIView):
 
         batch = Batches(
             batch_number=batch_number,
+            batch_code=generate_batch_code(course, faculty, start_date, batch_timing),
             course_type=course_type,
             course_name=course,
             faculty=faculty,
@@ -2395,12 +2442,12 @@ class BatchCreateView(APIView):
                 request.user,
                 'assignment',
                 'New Batch Assigned',
-                f"New Batch Assigned: {batch.batch_number} has been assigned to you.",
+                f"New Batch Assigned: {batch.batch_code or batch.batch_number} has been assigned to you.",
                 True,
             )
 
         return Response({
-            'message': f"Batch '{batch_number}' created successfully!",
+            'message': f"Batch '{batch.batch_code or batch.batch_number}' created successfully!",
             'batch': BatchSerializer(batch).data,
             'next_batch_number': generate_batch_number(branch),
         }, status=201)
@@ -2449,6 +2496,14 @@ class BatchDetailView(generics.RetrieveUpdateDestroyAPIView):
         if data.get('batch_number'):
             batch.batch_number = data.get('batch_number')
 
+        if 'batch_code' in data:
+            batch_code = str(data.get('batch_code') or '').strip()
+            if not batch_code:
+                return Response({'error': 'Batch code cannot be empty.'}, status=400)
+            if Batches.objects.filter(batch_code__iexact=batch_code).exclude(id=batch.id).exists():
+                return Response({'error': 'Batch code already exists.'}, status=400)
+            batch.batch_code = batch_code
+
         # -- Handle logsheet file ------------------------------------------
         if request.FILES.get('course_logsheet'):
             batch.course_logsheet = request.FILES.get('course_logsheet')
@@ -2457,6 +2512,9 @@ class BatchDetailView(generics.RetrieveUpdateDestroyAPIView):
             batch.end_date = calculate_batch_end_date(batch.course_name, batch.start_date)
         except ValueError as exc:
             return Response({'error': str(exc)}, status=400)
+
+        if not batch.batch_code:
+            batch.batch_code = generate_batch_code(batch.course_name, batch.faculty, batch.start_date, batch.batch_timing, batch.id)
 
         batch.save()
 
@@ -2469,15 +2527,44 @@ class BatchDetailView(generics.RetrieveUpdateDestroyAPIView):
                 return Response({'error': 'Trainer not found'}, status=404)
 
         return Response({
-            'message': f"Batch '{batch.batch_number}' updated successfully!",
+            'message': f"Batch '{batch.batch_code or batch.batch_number}' updated successfully!",
             'batch': BatchSerializer(batch).data,
         })
 
     def destroy(self, request, *args, **kwargs):
         batch = self.get_object()
-        batch_number = batch.batch_number
+        batch_number = batch.batch_code or batch.batch_number
         batch.delete()
-        return Response({'message': f"Batch '{batch_number}' deleted successfully!"}, status=204)
+        return Response({'message': f"Batch '{batch_number}' deleted successfully!"}, status=200)
+
+
+@api_view(['PATCH'])
+@permission_classes([IsAuthenticated])
+def rename_batch_code(request, batch_id):
+    try:
+        batch = Batches.objects.select_related('course_name', 'faculty').prefetch_related('trainer_assignments__trainer').get(id=batch_id)
+    except Batches.DoesNotExist:
+        return Response({'error': 'Batch not found.'}, status=404)
+
+    employee = Employee.objects.filter(user=request.user).first()
+    is_admin_user = request.user.is_staff or request.user.is_superuser
+    is_counselor = employee and str(employee.designation or '').lower() == 'counselor' and employee.branch == batch.branch
+    is_allowed_staff = employee and (_is_batch_trainer(batch, employee) or _is_previous_trainer_for_batch(batch, employee))
+    if not (is_admin_user or is_counselor or is_allowed_staff):
+        return Response({'error': 'You do not have permission to rename this batch.'}, status=403)
+
+    batch_code = str(request.data.get('batch_code') or '').strip()
+    if not batch_code:
+        return Response({'error': 'Batch code cannot be empty.'}, status=400)
+    if Batches.objects.filter(batch_code__iexact=batch_code).exclude(id=batch.id).exists():
+        return Response({'error': 'Batch code already exists.'}, status=400)
+
+    batch.batch_code = batch_code
+    batch.save(update_fields=['batch_code'])
+    return Response({
+        'message': 'Batch code updated successfully.',
+        'batch': BatchSerializer(batch, context={'request': request}).data,
+    })
 
 # -- STUDENTS -----------------------------------------------------------------
 class StudentListView(generics.ListAPIView):
@@ -5371,6 +5458,7 @@ def staff_quiz_results(request):
             'submitted_at': attempt.submitted_at,
             'batch_id': batch.id if batch else None,
             'batch_number': batch.batch_number if batch else None,
+            'batch_code': batch.batch_code if batch else None,
         })
 
     public_data = []
@@ -5572,6 +5660,7 @@ def student_sessions(request):
                 'completed_by_name': getattr(session.completed_by, 'first_name', None),
                 'batch_id': batch.id,
                 'batch_number': batch.batch_number,
+                'batch_code': batch.batch_code,
             })
 
         return Response({'results': data, 'batch': BatchSerializer(batch, context={'request': request}).data})
@@ -6725,6 +6814,7 @@ def _student_detail_payload(student):
             'date': str(a.date),
             'status': a.status,
             'batch_number': a.batch.batch_number if a.batch else '',
+            'batch_code': a.batch.batch_code if a.batch else '',
             'remarks': a.remarks or '-',
             'marked_by': f"{a.staff.first_name} {a.staff.last_name}" if a.staff else '-',
         } for a in att_qs],
@@ -8489,6 +8579,8 @@ def admin_employee_tracking(request):
             batch_details.append({
                 'id': batch.id,
                 'batch_number': batch.batch_number,
+                'batch_code': batch.batch_code,
+                'display_name': batch.batch_code or batch.batch_number,
                 'course': batch.course_name.course_name if batch.course_name else '',
                 'course_type': batch.course_type,
                 'timing': batch.batch_timing,
@@ -12057,9 +12149,10 @@ def trainer_announcement_batches(request):
         {
             'id': batch.id,
             'batch_number': batch.batch_number,
+            'batch_code': batch.batch_code,
             'batch_timing': batch.batch_timing,
             'course_name': batch.course_name.course_name if batch.course_name else '',
-            'display_text': f"{batch.batch_number} - {batch.course_name.course_name if batch.course_name else 'Course'} - {batch.batch_timing}",
+            'display_text': f"{batch.batch_code or batch.batch_number} - {batch.course_name.course_name if batch.course_name else 'Course'} - {batch.batch_timing}",
         }
         for batch in batches
     ])
@@ -12084,6 +12177,7 @@ def trainer_announcement_students(request):
             'name': f"{student.first_name} {student.last_name or ''}".strip(),
             'batch_id': student.assigned_batch_id,
             'batch_number': student.assigned_batch.batch_number if student.assigned_batch else '',
+            'batch_code': student.assigned_batch.batch_code if student.assigned_batch else '',
         }
         for student in students.select_related('assigned_batch').order_by('first_name', 'student_id')
     ])
@@ -12164,10 +12258,11 @@ def counselor_branch_batches(request):
             data.append({
                 'id': batch.id,
                 'batch_number': batch.batch_number,
+                'batch_code': batch.batch_code,
                 'batch_timing': timing_display or batch.batch_timing,
                 'trainer_name': trainer_name,
                 'course_name': course_name,
-                'display_text': f"{batch.batch_number} — {course_name} (Trainer: {trainer_name}) — {timing_display or batch.batch_timing}"
+                'display_text': f"{batch.batch_code or batch.batch_number} — {course_name} (Trainer: {trainer_name}) — {timing_display or batch.batch_timing}"
             })
         
         print(f"? Returning {len(data)} batches with trainer names")  # Debug log

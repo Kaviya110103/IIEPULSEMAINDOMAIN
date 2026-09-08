@@ -139,6 +139,7 @@ class EmployeeSerializer(serializers.ModelSerializer):
 from .models import Batches, Courses
 
 class BatchSerializer(serializers.ModelSerializer):
+    display_name = serializers.SerializerMethodField()
     course_name_display = serializers.SerializerMethodField()
     faculty_name = serializers.SerializerMethodField()
     trainer_ids = serializers.SerializerMethodField()
@@ -150,6 +151,9 @@ class BatchSerializer(serializers.ModelSerializer):
     class Meta:
         model = Batches
         fields = '__all__'
+
+    def get_display_name(self, obj):
+        return obj.batch_code or obj.batch_number
 
     def get_course_name_display(self, obj):
         try:
@@ -257,6 +261,7 @@ class BatchSerializer(serializers.ModelSerializer):
 class StudentSerializer(serializers.ModelSerializer):
     assigned_staff_name = serializers.SerializerMethodField()
     assigned_batch_number = serializers.CharField(source='assigned_batch.batch_number', read_only=True)
+    assigned_batch_code = serializers.CharField(source='assigned_batch.batch_code', read_only=True)
     assigned_batches = serializers.SerializerMethodField()
     enrolled_courses = serializers.SerializerMethodField()
     course_ids = serializers.SerializerMethodField()
@@ -298,6 +303,8 @@ class StudentSerializer(serializers.ModelSerializer):
         return {
             'id': batch.id,
             'batch_number': batch.batch_number,
+            'batch_code': batch.batch_code,
+            'display_name': batch.batch_code or batch.batch_number,
             'batch_timing': batch.batch_timing,
             'course_name': batch.course_name_id,
             'course_name_display': batch.course_name.course_name if batch.course_name else '',
@@ -351,6 +358,7 @@ class StudentSerializer(serializers.ModelSerializer):
 
 class AttendanceSerializer(serializers.ModelSerializer):
     batch_number = serializers.SerializerMethodField()
+    batch_code = serializers.SerializerMethodField()
     marked_by = serializers.SerializerMethodField()
     student_name = serializers.SerializerMethodField()
     student_id_display = serializers.SerializerMethodField()
@@ -364,6 +372,11 @@ class AttendanceSerializer(serializers.ModelSerializer):
 
     def get_batch_number(self, obj):
         return obj.batch.batch_number if obj.batch else '—'
+
+    def get_batch_code(self, obj):
+        if obj.batch and obj.batch.batch_code:
+            return obj.batch.batch_code
+        return obj.batch.batch_number if obj.batch else None
 
     def get_marked_by(self, obj):
         if obj.staff:
@@ -398,6 +411,7 @@ class StudyMaterialSerializer(serializers.ModelSerializer):
     uploaded_by_name = serializers.SerializerMethodField()
     uploaded_by_trainer_status = serializers.SerializerMethodField()
     batch_number = serializers.SerializerMethodField()
+    batch_code = serializers.SerializerMethodField()
     assigned_batches = serializers.SerializerMethodField()
     file = serializers.FileField(required=False, allow_null=True)
 
@@ -436,6 +450,8 @@ class StudyMaterialSerializer(serializers.ModelSerializer):
                 batches.append({
                     'id': batch.id,
                     'batch_number': batch.batch_number,
+                    'batch_code': batch.batch_code,
+                    'display_name': batch.batch_code or batch.batch_number,
                     'branch': batch.branch,
                     'course_name': getattr(batch.course_name, 'course_name', None) if batch.course_name else None,
                 })
@@ -448,6 +464,10 @@ class StudyMaterialSerializer(serializers.ModelSerializer):
     def get_batch_number(self, obj):
         batches = self.get_assigned_batches(obj)
         return ', '.join(batch['batch_number'] for batch in batches) if batches else None
+
+    def get_batch_code(self, obj):
+        batches = self.get_assigned_batches(obj)
+        return ', '.join(batch.get('display_name') or batch.get('batch_number') for batch in batches) if batches else None
 
 
 class QuestionSerializer(serializers.ModelSerializer):
@@ -486,6 +506,7 @@ class TestSerializer(serializers.ModelSerializer):
 class AssignedTestSerializer(serializers.ModelSerializer):
     test_name = serializers.CharField(source='test.title', read_only=True)
     batch_number = serializers.CharField(source='batch.batch_number', read_only=True)
+    batch_code = serializers.CharField(source='batch.batch_code', read_only=True)
 
     class Meta:
         model = AssignedTest
@@ -613,6 +634,7 @@ class QuizQuestionSerializer(serializers.ModelSerializer):
 class QuizSerializer(serializers.ModelSerializer):
     questions = QuizQuestionSerializer(many=True, read_only=True)
     batch_number = serializers.CharField(source='batch.batch_number', read_only=True)
+    batch_code = serializers.CharField(source='batch.batch_code', read_only=True)
     created_by_name = serializers.SerializerMethodField()
     created_by_trainer_status = serializers.SerializerMethodField()
 

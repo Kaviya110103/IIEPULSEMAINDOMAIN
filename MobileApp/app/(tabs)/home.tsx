@@ -21,6 +21,7 @@ type StudentData = {
   course?: string;
   email?: string;
   assigned_batch_number?: string;
+  assigned_batch_code?: string;
   assigned_staff_name?: string;
 };
 
@@ -178,7 +179,7 @@ export default function Home() {
     `${student?.first_name || ""} ${student?.last_name || ""}`.trim() ||
     "Student";
   const courseName = student?.course || "Course not assigned";
-  const batchNumber = student?.assigned_batch_number || "Not assigned";
+  const batchNumber = student?.assigned_batch_code || student?.assigned_batch_number || "Not assigned";
   const mentorName = student?.assigned_staff_name || "Not assigned";
   const attendancePercentage = clampPercent(dashboard?.attendance_percentage);
   const presentClasses = dashboard?.present_classes ?? 0;

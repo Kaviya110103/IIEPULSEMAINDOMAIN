@@ -21,6 +21,8 @@ const T = {
   shadowMd: '0 8px 40px rgba(15,27,45,0.14)',
 }
 
+const getBatchDisplayName = (batch) => batch?.batch_code || batch?.display_name || batch?.batch_number || 'N/A'
+
 const attendanceSessionText = (record) => {
   const count = Number(record.completed_session_count || 0)
   if (count > 0) return `${count} ${count === 1 ? 'Session' : 'Sessions'}`
@@ -499,7 +501,7 @@ export function StudentDashboard() {
       <StudentStyles />
       <StudentPageHeader
         title={`👋 Welcome, ${data?.student?.first_name || 'Student'}!`}
-        sub={`Student ID: ${data?.student?.student_id || '—'} · Batch: ${data?.student?.assigned_batch_number || 'Not assigned'}`}
+        sub={`Student ID: ${data?.student?.student_id || '—'} · Batch: ${data?.student?.assigned_batch_code || data?.student?.assigned_batch_number || 'Not assigned'}`}
       />
       <StudentModal open={showFeedbackPrompt} onClose={closeFeedbackPrompt} title="Student Feedback" size="xl">
         <iframe
@@ -821,7 +823,7 @@ export function StudentAttendance() {
                     {filteredRecords.map(r => (
                       <tr key={r.id}>
                         <td>{r.date}</td>
-                        <td>{r.batch_number}</td>
+                        <td>{r.batch_code || r.display_name || r.batch_number}</td>
                         <td>{r.marked_by || '-'}</td>
                         <td>{attendanceSessionText(r)}</td>
                         <td><StudentBadge text={r.status} variant={r.status === 'Present' ? 'success' : 'danger'} /></td>
@@ -880,7 +882,7 @@ export function StudentBatches() {
                   </div>
                   <div>
                     <h4 style={{ margin: 0, fontSize: 20 }}>{batch.course_name_display || batch.course_name || 'Course'}</h4>
-                    <div style={{ color: T.slate, fontSize: 13 }}>{batch.batch_number}</div>
+                    <div style={{ color: T.slate, fontSize: 13 }}>{getBatchDisplayName(batch)}</div>
                   </div>
                 </div>
                 <div style={{ display: 'grid', gap: 8, fontSize: 14, marginBottom: 16 }}>
@@ -891,7 +893,7 @@ export function StudentBatches() {
                       variant={batch.is_previous_assignment ? 'warning' : 'success'}
                     />
                   </div>
-                  <div><strong>Batch:</strong> {batch.batch_number || 'N/A'}</div>
+                  <div><strong>Batch:</strong> {getBatchDisplayName(batch)}</div>
                   <div><strong>Timing:</strong> {batch.batch_timing || 'N/A'}</div>
                   <div><strong>Duration:</strong> {batch.start_date || 'N/A'} to {batch.end_date || 'N/A'}</div>
                   <div><strong>Logsheet:</strong> {batch.total_sessions || 0} sessions, {batch.completed_sessions || 0} completed ({batch.progress_percentage || 0}%)</div>
@@ -1285,7 +1287,7 @@ export function StudentMaterials() {
                 {materials.map(m => (
                   <tr key={m.id}>
                     <td><div style={{ display: 'flex', alignItems: 'center', gap: 10 }}><div style={{ width: 36, height: 36, borderRadius: 8, background: `linear-gradient(135deg, ${T.amber}, ${T.rose})`, color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center' }}><i className={`fas ${fileIcon(m.file)}`} /></div><span style={{ fontWeight: 600 }}>{m.title}</span></div></td>
-                    <td><StudentBadge text={m.batch_number} variant="info" /></td>
+                    <td><StudentBadge text={m.batch_code || m.display_name || m.batch_number} variant="info" /></td>
                     <td style={{ fontSize: 12 }}>{m.uploaded_at ? new Date(m.uploaded_at).toLocaleDateString('en-IN') : '—'}</td>
                     <td>{m.file ? <button type="button" onClick={() => downloadMaterial(m)} className="student-btn student-btn-sm student-btn-ghost"><i className="fas fa-download" /> Download</button> : '—'}</td>
                   </tr>
@@ -2464,7 +2466,7 @@ const downloadBill = async (feeId) => {
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
                 {[
                   ['Course', fee.course_name],
-                  ['Batch', fee.batch_number],
+                  ['Batch', fee.batch_code || fee.display_name || fee.batch_number],
                   ['Total Fee', fmt(fee.total_fee)],
                   ['Amount Paid', fmt(fee.amount_paid)],
                   ['Balance Due', fmt(fee.balance)],
